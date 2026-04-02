@@ -79,7 +79,7 @@ permissions:
 
 jobs:
   sync-status:
-    if: inputs.event_name != 'schedule' && inputs.event_name != 'repository_dispatch'
+    if: inputs.event_name != 'schedule' && inputs.event_name != 'repository_dispatch' && inputs.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Sync reviewer labels and set PR status
@@ -385,7 +385,7 @@ jobs:
             -f field="$PR_STATUS_FIELD_ID" -f opt="$CORRECT_OPT"
 
   resync-all:
-    if: inputs.event_name == 'schedule'
+    if: inputs.event_name == 'schedule' || inputs.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Re-sync all open PR statuses and reconcile reviewer labels
