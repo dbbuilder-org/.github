@@ -4,29 +4,29 @@ on:
   workflow_call:
     inputs:
       # ── Project configuration ─────────────────────────────────────────────
-      project_id:
+      PROJECT_ID:
         required: true
         type: string
-      pr_status_field_id:
+      PR_STATUS_FIELD_ID:
         required: true
         type: string
-      iteration_field_id:
+      ITERATION_FIELD_ID:
         required: false
         type: string
         default: ''
-      opt_open:
+      OPT_OPEN:
         required: true
         type: string
-      opt_in_queue:
+      OPT_IN_QUEUE:
         required: true
         type: string
-      opt_blocked:
+      OPT_BLOCKED:
         required: true
         type: string
-      opt_merged:
+      OPT_MERGED:
         required: true
         type: string
-      opt_closed:
+      OPT_CLOSED:
         required: true
         type: string
       # ── Caller context ────────────────────────────────────────────────────
@@ -86,14 +86,14 @@ jobs:
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.project_token }}
-          PROJECT_ID: ${{ inputs.project_id }}
-          PR_STATUS_FIELD_ID: ${{ inputs.pr_status_field_id }}
-          ITERATION_FIELD_ID: ${{ inputs.iteration_field_id }}
-          OPT_OPEN: ${{ inputs.opt_open }}
-          OPT_IN_QUEUE: ${{ inputs.opt_in_queue }}
-          OPT_BLOCKED: ${{ inputs.opt_blocked }}
-          OPT_MERGED: ${{ inputs.opt_merged }}
-          OPT_CLOSED: ${{ inputs.opt_closed }}
+          PROJECT_ID: ${{ inputs.PROJECT_ID }}
+          PR_STATUS_FIELD_ID: ${{ inputs.PR_STATUS_FIELD_ID }}
+          ITERATION_FIELD_ID: ${{ inputs.ITERATION_FIELD_ID }}
+          OPT_OPEN: ${{ inputs.OPT_OPEN }}
+          OPT_IN_QUEUE: ${{ inputs.OPT_IN_QUEUE }}
+          OPT_BLOCKED: ${{ inputs.OPT_BLOCKED }}
+          OPT_MERGED: ${{ inputs.OPT_MERGED }}
+          OPT_CLOSED: ${{ inputs.OPT_CLOSED }}
           PR_NODE_ID: ${{ inputs.pr_node_id }}
           PR_NUMBER: ${{ inputs.pr_number }}
           REPO: ${{ inputs.repo }}
@@ -317,13 +317,13 @@ jobs:
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.project_token }}
-          PROJECT_ID: ${{ inputs.project_id }}
-          PR_STATUS_FIELD_ID: ${{ inputs.pr_status_field_id }}
-          OPT_OPEN: ${{ inputs.opt_open }}
-          OPT_IN_QUEUE: ${{ inputs.opt_in_queue }}
-          OPT_BLOCKED: ${{ inputs.opt_blocked }}
-          OPT_MERGED: ${{ inputs.opt_merged }}
-          OPT_CLOSED: ${{ inputs.opt_closed }}
+          PROJECT_ID: ${{ inputs.PROJECT_ID }}
+          PR_STATUS_FIELD_ID: ${{ inputs.PR_STATUS_FIELD_ID }}
+          OPT_OPEN: ${{ inputs.OPT_OPEN }}
+          OPT_IN_QUEUE: ${{ inputs.OPT_IN_QUEUE }}
+          OPT_BLOCKED: ${{ inputs.OPT_BLOCKED }}
+          OPT_MERGED: ${{ inputs.OPT_MERGED }}
+          OPT_CLOSED: ${{ inputs.OPT_CLOSED }}
           CONTENT_NODE_ID: ${{ inputs.content_node_id }}
           ITEM_ID: ${{ inputs.item_node_id }}
         run: |
@@ -391,13 +391,13 @@ jobs:
       - name: Re-sync all open PR statuses
         env:
           GH_TOKEN: ${{ secrets.project_token }}
-          PROJECT_ID: ${{ inputs.project_id }}
-          PR_STATUS_FIELD_ID: ${{ inputs.pr_status_field_id }}
-          OPT_OPEN: ${{ inputs.opt_open }}
-          OPT_IN_QUEUE: ${{ inputs.opt_in_queue }}
-          OPT_BLOCKED: ${{ inputs.opt_blocked }}
-          OPT_MERGED: ${{ inputs.opt_merged }}
-          OPT_CLOSED: ${{ inputs.opt_closed }}
+          PROJECT_ID: ${{ inputs.PROJECT_ID }}
+          PR_STATUS_FIELD_ID: ${{ inputs.PR_STATUS_FIELD_ID }}
+          OPT_OPEN: ${{ inputs.OPT_OPEN }}
+          OPT_IN_QUEUE: ${{ inputs.OPT_IN_QUEUE }}
+          OPT_BLOCKED: ${{ inputs.OPT_BLOCKED }}
+          OPT_MERGED: ${{ inputs.OPT_MERGED }}
+          OPT_CLOSED: ${{ inputs.OPT_CLOSED }}
           REPO: ${{ inputs.repo }}
         run: |
           set_status() {
