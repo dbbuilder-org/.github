@@ -247,7 +247,7 @@ jobs:
 
           for label in "${!DESIRED_LABELS[@]}"; do
             if [[ -z "${CURRENT_LABEL_SET[$label]+x}" ]]; then
-              gh api repos/"$REPO"/labels -f name="$label" -f color="0075ca" 2>/dev/null || true
+              gh api repos/"$REPO"/labels -f name="$label" -f color="0075ca" >/dev/null 2>&1 || true
               gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=$label"
             fi
           done
@@ -280,7 +280,7 @@ jobs:
 
           # ── Sync needs-changes label ─────────────────────────────────────────
           if [[ "$REVIEW_STATE" == "CHANGES_REQUESTED" ]]; then
-            gh api repos/"$REPO"/labels -f name="needs-changes" -f color="e11d48" 2>/dev/null || true
+            gh api repos/"$REPO"/labels -f name="needs-changes" -f color="e11d48" >/dev/null 2>&1 || true
             gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=needs-changes"
             NEEDS_CHANGES="true"
           elif [[ "$REVIEW_STATE" == "APPROVED" ]]; then
@@ -492,7 +492,7 @@ jobs:
                 LABEL=$(get_reviewer_label "$login")
                 HAS=$(echo "$ALL_LABELS" | jq --arg l "$LABEL" 'any(.[]; . == $l)')
                 if [[ "$HAS" != "true" ]]; then
-                  gh api repos/"$REPO"/labels -f name="$LABEL" -f color="0075ca" 2>/dev/null || true
+                  gh api repos/"$REPO"/labels -f name="$LABEL" -f color="0075ca" >/dev/null 2>&1 || true
                   gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=$LABEL"
                 fi
               done <<< "$REVIEWER_LOGINS"
@@ -502,7 +502,7 @@ jobs:
           # ── Recently closed/merged PRs: fix status ─────────────────────────
           YESTERDAY=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)
           CLOSED_NUMBERS=$(gh api "repos/$REPO/pulls?state=closed&per_page=50&sort=updated&direction=desc" \
-            --jq --arg since "$YESTERDAY" \
+            | jq -r --arg since "$YESTERDAY" \
             '[.[] | select(.updated_at >= $since)] | .[].number')
 
           for PR_NUMBER in $CLOSED_NUMBERS; do
