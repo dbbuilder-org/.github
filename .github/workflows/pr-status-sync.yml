@@ -388,7 +388,7 @@ jobs:
     if: inputs.event_name == 'schedule'
     runs-on: ubuntu-latest
     steps:
-      - name: Re-sync all open PR statuses
+      - name: Re-sync all open PR statuses and reconcile reviewer labels
         env:
           GH_TOKEN: ${{ secrets.project_token }}
           PROJECT_ID: ${{ inputs.PROJECT_ID }}
@@ -413,6 +413,33 @@ jobs:
               -f field="$PR_STATUS_FIELD_ID" -f opt="$opt"
           }
 
+          get_reviewer_label() {
+            local login="$1"
+            local name first rest
+            name=$(gh api users/"$login" --jq '.name // .login')
+            first=$(echo "$name" | sed 's/[-[:space:]].*//')
+            first=$(echo "$first" | sed 's/[0-9]*$//')
+            first="${first^}"
+            rest="${first:1}"
+            if [[ "$rest" =~ [a-z] ]]; then
+              first=$(echo "$first" | sed 's/[A-Z]*$//')
+            fi
+            echo "reviewer:$first"
+          }
+
+          get_item_id() {
+            local pr_node_id="$1"
+            gh api graphql -f query='
+              mutation($proj: ID!, $pr: ID!) {
+                addProjectV2ItemById(input: { projectId: $proj, contentId: $pr }) {
+                  item { id }
+                }
+              }' \
+              -f proj="$PROJECT_ID" -f pr="$pr_node_id" \
+              --jq '.data.addProjectV2ItemById.item.id'
+          }
+
+          # ── Open PRs: fix status + reconcile reviewer labels ───────────────
           PR_NUMBERS=$(gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate --jq '.[].number')
 
           for PR_NUMBER in $PR_NUMBERS; do
@@ -429,16 +456,10 @@ jobs:
             CLOSED=$(echo "$PR_DATA" | jq -r '.state == "closed"')
             DRAFT=$(echo "$PR_DATA" | jq -r '.draft')
 
-            ITEM_ID=$(gh api graphql -f query='
-              mutation($proj: ID!, $pr: ID!) {
-                addProjectV2ItemById(input: { projectId: $proj, contentId: $pr }) {
-                  item { id }
-                }
-              }' \
-              -f proj="$PROJECT_ID" -f pr="$PR_NODE_ID" \
-              --jq '.data.addProjectV2ItemById.item.id')
+            ITEM_ID=$(get_item_id "$PR_NODE_ID")
             [[ -z "$ITEM_ID" ]] && continue
 
+            # ── Status ────────────────────────────────────────────────────
             HAS_LABEL=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels \
               --jq 'any(.[].name; . == "needs-changes")')
             if [[ "$HAS_LABEL" == "true" ]]; then
@@ -460,5 +481,44 @@ jobs:
               set_status "$ITEM_ID" "$OPT_IN_QUEUE"
             else
               set_status "$ITEM_ID" "$OPT_OPEN"
+            fi
+
+            # ── Reviewer labels ───────────────────────────────────────────
+            REVIEWER_LOGINS=$(echo "$PR_DATA" | jq -r '.requested_reviewers[].login')
+            if [[ -n "$REVIEWER_LOGINS" ]]; then
+              ALL_LABELS=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels --jq '[.[].name]')
+              while IFS= read -r login; do
+                [[ -z "$login" ]] && continue
+                LABEL=$(get_reviewer_label "$login")
+                HAS=$(echo "$ALL_LABELS" | jq --arg l "$LABEL" 'any(.[]; . == $l)')
+                if [[ "$HAS" != "true" ]]; then
+                  gh api repos/"$REPO"/labels -f name="$LABEL" -f color="0075ca" 2>/dev/null || true
+                  gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=$LABEL"
+                fi
+              done <<< "$REVIEWER_LOGINS"
+            fi
+          done
+
+          # ── Recently closed/merged PRs: fix status ─────────────────────────
+          YESTERDAY=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+          CLOSED_NUMBERS=$(gh api "repos/$REPO/pulls?state=closed&per_page=50&sort=updated&direction=desc" \
+            --jq --arg since "$YESTERDAY" \
+            '[.[] | select(.updated_at >= $since)] | .[].number')
+
+          for PR_NUMBER in $CLOSED_NUMBERS; do
+            PR_DATA=$(gh api repos/"$REPO"/pulls/"$PR_NUMBER" --jq '{
+              node_id: .node_id,
+              merged: .merged
+            }')
+            PR_NODE_ID=$(echo "$PR_DATA" | jq -r '.node_id')
+            MERGED=$(echo "$PR_DATA" | jq -r '.merged')
+
+            ITEM_ID=$(get_item_id "$PR_NODE_ID")
+            [[ -z "$ITEM_ID" ]] && continue
+
+            if [[ "$MERGED" == "true" ]]; then
+              set_status "$ITEM_ID" "$OPT_MERGED"
+            else
+              set_status "$ITEM_ID" "$OPT_CLOSED"
             fi
           done
