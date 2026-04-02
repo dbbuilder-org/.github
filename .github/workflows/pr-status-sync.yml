@@ -1,0 +1,464 @@
+name: PR Status Sync (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      # ── Project configuration ─────────────────────────────────────────────
+      project_id:
+        required: true
+        type: string
+      pr_status_field_id:
+        required: true
+        type: string
+      iteration_field_id:
+        required: false
+        type: string
+        default: ''
+      opt_open:
+        required: true
+        type: string
+      opt_in_queue:
+        required: true
+        type: string
+      opt_blocked:
+        required: true
+        type: string
+      opt_merged:
+        required: true
+        type: string
+      opt_closed:
+        required: true
+        type: string
+      # ── Caller context ────────────────────────────────────────────────────
+      event_name:
+        required: true
+        type: string
+      repo:
+        required: true
+        type: string
+      org:
+        required: true
+        type: string
+      # ── PR event data ─────────────────────────────────────────────────────
+      pr_node_id:
+        required: false
+        type: string
+        default: ''
+      pr_number:
+        required: false
+        type: string
+        default: ''
+      action:
+        required: false
+        type: string
+        default: ''
+      label_name:
+        required: false
+        type: string
+        default: ''
+      review_state:
+        required: false
+        type: string
+        default: ''
+      # ── repository_dispatch drag data ─────────────────────────────────────
+      content_node_id:
+        required: false
+        type: string
+        default: ''
+      item_node_id:
+        required: false
+        type: string
+        default: ''
+    secrets:
+      project_token:
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  sync-status:
+    if: inputs.event_name != 'schedule' && inputs.event_name != 'repository_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sync reviewer labels and set PR status
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.project_token }}
+          PROJECT_ID: ${{ inputs.project_id }}
+          PR_STATUS_FIELD_ID: ${{ inputs.pr_status_field_id }}
+          ITERATION_FIELD_ID: ${{ inputs.iteration_field_id }}
+          OPT_OPEN: ${{ inputs.opt_open }}
+          OPT_IN_QUEUE: ${{ inputs.opt_in_queue }}
+          OPT_BLOCKED: ${{ inputs.opt_blocked }}
+          OPT_MERGED: ${{ inputs.opt_merged }}
+          OPT_CLOSED: ${{ inputs.opt_closed }}
+          PR_NODE_ID: ${{ inputs.pr_node_id }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          REPO: ${{ inputs.repo }}
+          ORG: ${{ inputs.org }}
+          ACTION: ${{ inputs.action }}
+          LABEL_NAME: ${{ inputs.label_name }}
+          REVIEW_STATE: ${{ inputs.review_state }}
+        run: |
+          # ═════ Functions ═══════════════════════════════════════════════════════════════════════
+          get_reviewer_label() {
+            local login="$1"
+            local name first rest
+            name=$(gh api users/"$login" --jq '.name // .login')
+            first=$(echo "$name" | sed 's/[-[:space:]].*//')
+            first=$(echo "$first" | sed 's/[0-9]*$//')
+            first="${first^}"
+            rest="${first:1}"
+            if [[ "$rest" =~ [a-z] ]]; then
+              first=$(echo "$first" | sed 's/[A-Z]*$//')
+            fi
+            echo "reviewer:$first"
+          }
+
+          set_status() {
+            gh api graphql -f query='
+              mutation($proj: ID!, $item: ID!, $field: ID!, $opt: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $proj, itemId: $item,
+                  fieldId: $field, value: { singleSelectOptionId: $opt }
+                }) { projectV2Item { id } }
+              }' \
+              -f proj="$PROJECT_ID" -f item="$ITEM_ID" \
+              -f field="$PR_STATUS_FIELD_ID" -f opt="$1"
+          }
+
+          # ═════ Variables ═══════════════════════════════════════════════════════════════════════
+          ITEM_ID=$(gh api graphql -f query='
+            mutation($proj: ID!, $pr: ID!) {
+              addProjectV2ItemById(input: { projectId: $proj, contentId: $pr }) {
+                item { id }
+              }
+            }' \
+            -f proj="$PROJECT_ID" -f pr="$PR_NODE_ID" \
+            --jq '.data.addProjectV2ItemById.item.id')
+          if [[ -z "$ITEM_ID" ]]; then
+            echo "Error: failed to retrieve pull request item ID." >&2
+            exit 1
+          fi
+
+          PR_DATA=$(gh api repos/"$REPO"/pulls/"$PR_NUMBER" --jq '{
+            requested_reviewers: .requested_reviewers,
+            merged: .merged,
+            state: .state,
+            draft: .draft
+          }')
+          REVIEWER_COUNT=$(echo "$PR_DATA" | jq '.requested_reviewers | length')
+          MERGED=$(echo "$PR_DATA" | jq -r '.merged')
+          CLOSED=$(echo "$PR_DATA" | jq -r '.state == "closed"')
+          DRAFT=$(echo "$PR_DATA" | jq -r '.draft')
+
+          # ═════ Run ═════════════════════════════════════════════════════════════════════════════
+          # ── Assign current iteration if field is configured ──────────────────
+          if [[ -n "$ITERATION_FIELD_ID" ]]; then
+            EXISTING_ITER=$(gh api graphql -f query='
+              query($item: ID!) {
+                node(id: $item) {
+                  ... on ProjectV2Item {
+                    fieldValues(first: 20) {
+                      nodes {
+                        ... on ProjectV2ItemFieldIterationValue { iterationId }
+                      }
+                    }
+                  }
+                }
+              }' \
+              -f item="$ITEM_ID" \
+              --jq '.data.node.fieldValues.nodes[] | select(.iterationId != null) | .iterationId' \
+              | head -1)
+            if [[ -z "$EXISTING_ITER" ]]; then
+              CURRENT_ITER_ID=$(gh api graphql -f query='
+                query($proj: ID!) {
+                  node(id: $proj) {
+                    ... on ProjectV2 {
+                      fields(first: 20) {
+                        nodes {
+                          ... on ProjectV2IterationField {
+                            id
+                            configuration {
+                              iterations { id startDate duration }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }' \
+                -f proj="$PROJECT_ID" \
+                --jq --argjson today "$(date -u +%s)" '
+                  .data.node.fields.nodes[] |
+                  select(.configuration != null) |
+                  .configuration.iterations[] |
+                  select(
+                    (.startDate | strptime("%Y-%m-%d") | mktime) <= $today and
+                    ((.startDate | strptime("%Y-%m-%d") | mktime) + (.duration * 86400)) > $today
+                  ) | .id' \
+                | head -1)
+              if [[ -n "$CURRENT_ITER_ID" ]]; then
+                gh api graphql -f query='
+                  mutation($proj: ID!, $item: ID!, $field: ID!, $iter: String!) {
+                    updateProjectV2ItemFieldValue(input: {
+                      projectId: $proj, itemId: $item,
+                      fieldId: $field, value: { iterationId: $iter }
+                    }) { projectV2Item { id } }
+                  }' \
+                  -f proj="$PROJECT_ID" -f item="$ITEM_ID" \
+                  -f field="$ITERATION_FIELD_ID" -f iter="$CURRENT_ITER_ID"
+              fi
+            fi
+          fi
+
+          # ── reviewer:Name label removed → remove that reviewer ───────────────
+          if [[ "$ACTION" == "unlabeled" && "${LABEL_NAME,,}" == reviewer:* ]]; then
+            ORG_MEMBERS=$(gh api "orgs/$ORG/members" --paginate --jq '.[].login')
+            while IFS= read -r member; do
+              [[ -z "$member" ]] && continue
+              if [[ "${LABEL_NAME,,}" == "$(get_reviewer_label "$member" | tr '[:upper:]' '[:lower:]')" ]]; then
+                gh api repos/"$REPO"/pulls/"$PR_NUMBER"/requested_reviewers \
+                  -X DELETE -f "reviewers[]=$member"
+                break
+              fi
+            done <<< "$ORG_MEMBERS"
+          fi
+
+          # ── Reconcile reviewer labels ────────────────────────────────────────
+          REVIEWER_LOGINS=$(echo "$PR_DATA" | jq -r '.requested_reviewers[].login')
+          ALL_LABELS=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels --jq '[.[].name]')
+          CURRENT_REVIEWER_LABELS=$(echo "$ALL_LABELS" | jq -r '.[] | select(startswith("reviewer:"))')
+
+          declare -A DESIRED_LABELS
+          while IFS= read -r login; do
+            [[ -z "$login" ]] && continue
+            LABEL=$(get_reviewer_label "$login")
+            DESIRED_LABELS["$LABEL"]=1
+          done <<< "$REVIEWER_LOGINS"
+
+          declare -A CURRENT_LABEL_SET
+          while IFS= read -r label; do
+            [[ -z "$label" ]] && continue
+            CURRENT_LABEL_SET["$label"]=1
+          done <<< "$CURRENT_REVIEWER_LABELS"
+
+          for label in "${!DESIRED_LABELS[@]}"; do
+            if [[ -z "${CURRENT_LABEL_SET[$label]+x}" ]]; then
+              gh api repos/"$REPO"/labels -f name="$label" -f color="0075ca" 2>/dev/null || true
+              gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=$label"
+            fi
+          done
+
+          MISSING_LABEL_COUNT=0
+          while IFS= read -r label; do
+            [[ -z "$label" ]] && continue
+            [[ -z "${DESIRED_LABELS[$label]+x}" ]] && MISSING_LABEL_COUNT=$((MISSING_LABEL_COUNT + 1))
+          done <<< "$CURRENT_REVIEWER_LABELS"
+
+          if [[ "$MISSING_LABEL_COUNT" -gt 0 ]]; then
+            ORG_MEMBERS=$(gh api "orgs/$ORG/members" --paginate --jq '.[].login')
+            ARGS=()
+            while IFS= read -r label; do
+              [[ -z "$label" ]] && continue
+              [[ -n "${DESIRED_LABELS[$label]+x}" ]] && continue
+              while IFS= read -r member; do
+                [[ -z "$member" ]] && continue
+                if [[ "$(get_reviewer_label "$member")" == "$label" ]]; then
+                  ARGS+=(-f "reviewers[]=$member")
+                  break
+                fi
+              done <<< "$ORG_MEMBERS"
+            done <<< "$CURRENT_REVIEWER_LABELS"
+            if [[ ${#ARGS[@]} -gt 0 ]]; then
+              gh api repos/"$REPO"/pulls/"$PR_NUMBER"/requested_reviewers \
+                -X POST "${ARGS[@]}"
+            fi
+          fi
+
+          # ── Sync needs-changes label ─────────────────────────────────────────
+          if [[ "$REVIEW_STATE" == "CHANGES_REQUESTED" ]]; then
+            gh api repos/"$REPO"/labels -f name="needs-changes" -f color="e11d48" 2>/dev/null || true
+            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=needs-changes"
+            NEEDS_CHANGES="true"
+          elif [[ "$REVIEW_STATE" == "APPROVED" ]]; then
+            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/needs-changes -X DELETE || true
+            NEEDS_CHANGES="false"
+          else
+            NEEDS_CHANGES=$(echo "$ALL_LABELS" | jq 'any(.[]; . == "needs-changes")')
+            if [[ "$NEEDS_CHANGES" != "true" ]]; then
+              NEEDS_CHANGES=$(gh api repos/"$REPO"/pulls/"$PR_NUMBER"/reviews \
+                --jq 'group_by(.user.login) | map(max_by(.submitted_at)) | any(.[]; .state == "CHANGES_REQUESTED")')
+            fi
+          fi
+
+          # ── Set PR Status ──────────────────────────────────────────────────
+          if [[ "$DRAFT" == "true" ]]; then
+            set_status "$OPT_OPEN"
+          elif [[ "$MERGED" == "true" ]]; then
+            set_status "$OPT_MERGED"
+          elif [[ "$CLOSED" == "true" ]]; then
+            set_status "$OPT_CLOSED"
+          elif [[ "$NEEDS_CHANGES" == "true" ]]; then
+            set_status "$OPT_BLOCKED"
+          elif [[ "$REVIEWER_COUNT" -gt 0 ]]; then
+            set_status "$OPT_IN_QUEUE"
+          else
+            set_status "$OPT_OPEN"
+          fi
+
+  sync-on-drag:
+    if: inputs.event_name == 'repository_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Re-evaluate PR status after project board drag
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.project_token }}
+          PROJECT_ID: ${{ inputs.project_id }}
+          PR_STATUS_FIELD_ID: ${{ inputs.pr_status_field_id }}
+          OPT_OPEN: ${{ inputs.opt_open }}
+          OPT_IN_QUEUE: ${{ inputs.opt_in_queue }}
+          OPT_BLOCKED: ${{ inputs.opt_blocked }}
+          OPT_MERGED: ${{ inputs.opt_merged }}
+          OPT_CLOSED: ${{ inputs.opt_closed }}
+          CONTENT_NODE_ID: ${{ inputs.content_node_id }}
+          ITEM_ID: ${{ inputs.item_node_id }}
+        run: |
+          PR_INFO=$(gh api graphql -f query='
+            query($id: ID!) {
+              node(id: $id) {
+                ... on PullRequest {
+                  number
+                  repository { nameWithOwner }
+                }
+              }
+            }' -f id="$CONTENT_NODE_ID" \
+            --jq '.data.node | "\(.number) \(.repository.nameWithOwner)"')
+          PR_NUMBER=$(echo "$PR_INFO" | cut -d' ' -f1)
+          REPO=$(echo "$PR_INFO" | cut -d' ' -f2)
+
+          PR_DATA=$(gh api repos/"$REPO"/pulls/"$PR_NUMBER" --jq '{
+            requested_reviewers: .requested_reviewers,
+            merged: .merged,
+            state: .state,
+            draft: .draft
+          }')
+          REVIEWER_COUNT=$(echo "$PR_DATA" | jq '.requested_reviewers | length')
+          MERGED=$(echo "$PR_DATA" | jq -r '.merged')
+          CLOSED=$(echo "$PR_DATA" | jq -r '.state == "closed"')
+          DRAFT=$(echo "$PR_DATA" | jq -r '.draft')
+
+          HAS_LABEL=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels \
+            --jq 'any(.[].name; . == "needs-changes")')
+          if [[ "$HAS_LABEL" == "true" ]]; then
+            NEEDS_CHANGES="true"
+          else
+            NEEDS_CHANGES=$(gh api repos/"$REPO"/pulls/"$PR_NUMBER"/reviews \
+              --jq 'group_by(.user.login) | map(max_by(.submitted_at)) | any(.[]; .state == "CHANGES_REQUESTED")')
+          fi
+
+          if [[ "$DRAFT" == "true" ]]; then
+            CORRECT_OPT="$OPT_OPEN"
+          elif [[ "$MERGED" == "true" ]]; then
+            CORRECT_OPT="$OPT_MERGED"
+          elif [[ "$CLOSED" == "true" ]]; then
+            CORRECT_OPT="$OPT_CLOSED"
+          elif [[ "$NEEDS_CHANGES" == "true" ]]; then
+            CORRECT_OPT="$OPT_BLOCKED"
+          elif [[ "$REVIEWER_COUNT" -gt 0 ]]; then
+            CORRECT_OPT="$OPT_IN_QUEUE"
+          else
+            CORRECT_OPT="$OPT_OPEN"
+          fi
+
+          gh api graphql -f query='
+            mutation($proj: ID!, $item: ID!, $field: ID!, $opt: String!) {
+              updateProjectV2ItemFieldValue(input: {
+                projectId: $proj, itemId: $item,
+                fieldId: $field, value: { singleSelectOptionId: $opt }
+              }) { projectV2Item { id } }
+            }' \
+            -f proj="$PROJECT_ID" -f item="$ITEM_ID" \
+            -f field="$PR_STATUS_FIELD_ID" -f opt="$CORRECT_OPT"
+
+  resync-all:
+    if: inputs.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Re-sync all open PR statuses
+        env:
+          GH_TOKEN: ${{ secrets.project_token }}
+          PROJECT_ID: ${{ inputs.project_id }}
+          PR_STATUS_FIELD_ID: ${{ inputs.pr_status_field_id }}
+          OPT_OPEN: ${{ inputs.opt_open }}
+          OPT_IN_QUEUE: ${{ inputs.opt_in_queue }}
+          OPT_BLOCKED: ${{ inputs.opt_blocked }}
+          OPT_MERGED: ${{ inputs.opt_merged }}
+          OPT_CLOSED: ${{ inputs.opt_closed }}
+          REPO: ${{ inputs.repo }}
+        run: |
+          set_status() {
+            local item_id="$1" opt="$2"
+            gh api graphql -f query='
+              mutation($proj: ID!, $item: ID!, $field: ID!, $opt: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $proj, itemId: $item,
+                  fieldId: $field, value: { singleSelectOptionId: $opt }
+                }) { projectV2Item { id } }
+              }' \
+              -f proj="$PROJECT_ID" -f item="$item_id" \
+              -f field="$PR_STATUS_FIELD_ID" -f opt="$opt"
+          }
+
+          PR_NUMBERS=$(gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate --jq '.[].number')
+
+          for PR_NUMBER in $PR_NUMBERS; do
+            PR_DATA=$(gh api repos/"$REPO"/pulls/"$PR_NUMBER" --jq '{
+              node_id: .node_id,
+              requested_reviewers: .requested_reviewers,
+              merged: .merged,
+              state: .state,
+              draft: .draft
+            }')
+            PR_NODE_ID=$(echo "$PR_DATA" | jq -r '.node_id')
+            REVIEWER_COUNT=$(echo "$PR_DATA" | jq '.requested_reviewers | length')
+            MERGED=$(echo "$PR_DATA" | jq -r '.merged')
+            CLOSED=$(echo "$PR_DATA" | jq -r '.state == "closed"')
+            DRAFT=$(echo "$PR_DATA" | jq -r '.draft')
+
+            ITEM_ID=$(gh api graphql -f query='
+              mutation($proj: ID!, $pr: ID!) {
+                addProjectV2ItemById(input: { projectId: $proj, contentId: $pr }) {
+                  item { id }
+                }
+              }' \
+              -f proj="$PROJECT_ID" -f pr="$PR_NODE_ID" \
+              --jq '.data.addProjectV2ItemById.item.id')
+            [[ -z "$ITEM_ID" ]] && continue
+
+            HAS_LABEL=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels \
+              --jq 'any(.[].name; . == "needs-changes")')
+            if [[ "$HAS_LABEL" == "true" ]]; then
+              NEEDS_CHANGES="true"
+            else
+              NEEDS_CHANGES=$(gh api repos/"$REPO"/pulls/"$PR_NUMBER"/reviews \
+                --jq 'group_by(.user.login) | map(max_by(.submitted_at)) | any(.[]; .state == "CHANGES_REQUESTED")')
+            fi
+
+            if [[ "$DRAFT" == "true" ]]; then
+              set_status "$ITEM_ID" "$OPT_OPEN"
+            elif [[ "$MERGED" == "true" ]]; then
+              set_status "$ITEM_ID" "$OPT_MERGED"
+            elif [[ "$CLOSED" == "true" ]]; then
+              set_status "$ITEM_ID" "$OPT_CLOSED"
+            elif [[ "$NEEDS_CHANGES" == "true" ]]; then
+              set_status "$ITEM_ID" "$OPT_BLOCKED"
+            elif [[ "$REVIEWER_COUNT" -gt 0 ]]; then
+              set_status "$ITEM_ID" "$OPT_IN_QUEUE"
+            else
+              set_status "$ITEM_ID" "$OPT_OPEN"
+            fi
+          done
