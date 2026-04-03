@@ -14,7 +14,7 @@ on:
         required: false
         type: string
         default: ''
-      OPT_OPEN:
+      OPT_UNASSIGNED:
         required: true
         type: string
       OPT_IN_QUEUE:
@@ -89,7 +89,7 @@ jobs:
           PROJECT_ID: ${{ inputs.PROJECT_ID }}
           PR_STATUS_FIELD_ID: ${{ inputs.PR_STATUS_FIELD_ID }}
           ITERATION_FIELD_ID: ${{ inputs.ITERATION_FIELD_ID }}
-          OPT_OPEN: ${{ inputs.OPT_OPEN }}
+          OPT_UNASSIGNED: ${{ inputs.OPT_UNASSIGNED }}
           OPT_IN_QUEUE: ${{ inputs.OPT_IN_QUEUE }}
           OPT_BLOCKED: ${{ inputs.OPT_BLOCKED }}
           OPT_MERGED: ${{ inputs.OPT_MERGED }}
@@ -293,7 +293,7 @@ jobs:
 
           # ── Set PR Status ──────────────────────────────────────────────────
           if [[ "$DRAFT" == "true" ]]; then
-            set_status "$OPT_OPEN"
+            set_status "$OPT_UNASSIGNED"
           elif [[ "$MERGED" == "true" ]]; then
             set_status "$OPT_MERGED"
           elif [[ "$CLOSED" == "true" ]]; then
@@ -303,7 +303,7 @@ jobs:
           elif [[ "$REVIEWER_COUNT" -gt 0 ]]; then
             set_status "$OPT_IN_QUEUE"
           else
-            set_status "$OPT_OPEN"
+            set_status "$OPT_UNASSIGNED"
           fi
 
   sync-on-drag:
@@ -316,7 +316,7 @@ jobs:
           GH_TOKEN: ${{ secrets.project_token }}
           PROJECT_ID: ${{ inputs.PROJECT_ID }}
           PR_STATUS_FIELD_ID: ${{ inputs.PR_STATUS_FIELD_ID }}
-          OPT_OPEN: ${{ inputs.OPT_OPEN }}
+          OPT_UNASSIGNED: ${{ inputs.OPT_UNASSIGNED }}
           OPT_IN_QUEUE: ${{ inputs.OPT_IN_QUEUE }}
           OPT_BLOCKED: ${{ inputs.OPT_BLOCKED }}
           OPT_MERGED: ${{ inputs.OPT_MERGED }}
@@ -353,7 +353,7 @@ jobs:
             --jq 'any(.[].name; . == "needs-changes")')
 
           if [[ "$DRAFT" == "true" ]]; then
-            CORRECT_OPT="$OPT_OPEN"
+            CORRECT_OPT="$OPT_UNASSIGNED"
           elif [[ "$MERGED" == "true" ]]; then
             CORRECT_OPT="$OPT_MERGED"
           elif [[ "$CLOSED" == "true" ]]; then
@@ -363,7 +363,7 @@ jobs:
           elif [[ "$REVIEWER_COUNT" -gt 0 ]]; then
             CORRECT_OPT="$OPT_IN_QUEUE"
           else
-            CORRECT_OPT="$OPT_OPEN"
+            CORRECT_OPT="$OPT_UNASSIGNED"
           fi
 
           gh api graphql -f query='
@@ -385,7 +385,7 @@ jobs:
           GH_TOKEN: ${{ secrets.project_token }}
           PROJECT_ID: ${{ inputs.PROJECT_ID }}
           PR_STATUS_FIELD_ID: ${{ inputs.PR_STATUS_FIELD_ID }}
-          OPT_OPEN: ${{ inputs.OPT_OPEN }}
+          OPT_UNASSIGNED: ${{ inputs.OPT_UNASSIGNED }}
           OPT_IN_QUEUE: ${{ inputs.OPT_IN_QUEUE }}
           OPT_BLOCKED: ${{ inputs.OPT_BLOCKED }}
           OPT_MERGED: ${{ inputs.OPT_MERGED }}
@@ -457,7 +457,7 @@ jobs:
               --jq 'any(.[].name; . == "needs-changes")')
 
             if [[ "$DRAFT" == "true" ]]; then
-              set_status "$ITEM_ID" "$OPT_OPEN"
+              set_status "$ITEM_ID" "$OPT_UNASSIGNED"
             elif [[ "$MERGED" == "true" ]]; then
               set_status "$ITEM_ID" "$OPT_MERGED"
             elif [[ "$CLOSED" == "true" ]]; then
@@ -467,7 +467,7 @@ jobs:
             elif [[ "$REVIEWER_COUNT" -gt 0 ]]; then
               set_status "$ITEM_ID" "$OPT_IN_QUEUE"
             else
-              set_status "$ITEM_ID" "$OPT_OPEN"
+              set_status "$ITEM_ID" "$OPT_UNASSIGNED"
             fi
 
             # ── Reviewer labels ───────────────────────────────────────────
