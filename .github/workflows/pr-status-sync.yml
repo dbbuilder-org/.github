@@ -287,8 +287,8 @@ jobs:
             gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/needs-changes -X DELETE || true
             NEEDS_CHANGES="false"
           else
-            # Label is the source of truth — a manual removal is respected.
-            NEEDS_CHANGES=$(echo "$ALL_LABELS" | jq 'any(.[]; . == "needs-changes")')
+            # Either label blocks the PR — a manual removal of both is respected.
+            NEEDS_CHANGES=$(echo "$ALL_LABELS" | jq 'any(.[]; . == "needs-changes" or . == "question")')
           fi
 
           # ── Set PR Status ──────────────────────────────────────────────────
@@ -348,9 +348,9 @@ jobs:
           CLOSED=$(echo "$PR_DATA" | jq -r '.state == "closed"')
           DRAFT=$(echo "$PR_DATA" | jq -r '.draft')
 
-          # Label is the source of truth — a manual removal is respected.
+          # Either label blocks the PR — a manual removal of both is respected.
           NEEDS_CHANGES=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels \
-            --jq 'any(.[].name; . == "needs-changes")')
+            --jq 'any(.[].name; . == "needs-changes" or . == "question")')
 
           if [[ "$DRAFT" == "true" ]]; then
             CORRECT_OPT="$OPT_UNASSIGNED"
@@ -452,9 +452,9 @@ jobs:
             [[ -z "$ITEM_ID" ]] && continue
 
             # ── Status ────────────────────────────────────────────────────
-            # Label is the source of truth — a manual removal is respected.
+            # Either label blocks the PR — a manual removal of both is respected.
             NEEDS_CHANGES=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels \
-              --jq 'any(.[].name; . == "needs-changes")')
+              --jq 'any(.[].name; . == "needs-changes" or . == "question")')
 
             if [[ "$DRAFT" == "true" ]]; then
               set_status "$ITEM_ID" "$OPT_UNASSIGNED"
