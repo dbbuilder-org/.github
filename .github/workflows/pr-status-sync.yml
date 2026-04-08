@@ -287,17 +287,17 @@ jobs:
             gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=$BASE_LABEL"
           fi
 
-          # ── Sync needs-changes label ───────────────────────────────────────────────────────────────────────
+          # ── Sync .needs-changes label ───────────────────────────────────────────────────────────────────────
           if [[ "$REVIEW_STATE" == "CHANGES_REQUESTED" ]]; then
-            gh api repos/"$REPO"/labels -f name="needs-changes" -f color="e11d48" >/dev/null 2>&1 || true
-            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=needs-changes"
+            gh api repos/"$REPO"/labels -f name=".needs-changes" -f color="e11d48" >/dev/null 2>&1 || true
+            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=.needs-changes"
             NEEDS_CHANGES="true"
           elif [[ "$REVIEW_STATE" == "APPROVED" ]]; then
-            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/needs-changes -X DELETE || true
+            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/.needs-changes -X DELETE || true
             NEEDS_CHANGES="false"
           else
             # Either label blocks the PR — a manual removal of both is respected.
-            NEEDS_CHANGES=$(echo "$ALL_LABELS" | jq 'any(.[]; . == "needs-changes" or . == "question")')
+            NEEDS_CHANGES=$(echo "$ALL_LABELS" | jq 'any(.[]; . == ".needs-changes" or . == "question")')
           fi
 
           # ── Set PR Status ──────────────────────────────────────────────────
@@ -359,7 +359,7 @@ jobs:
 
           # Either label blocks the PR — a manual removal of both is respected.
           NEEDS_CHANGES=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels \
-            --jq 'any(.[].name; . == "needs-changes" or . == "question")')
+            --jq 'any(.[].name; . == ".needs-changes" or . == "question")')
 
           if [[ "$DRAFT" == "true" ]]; then
             CORRECT_OPT="$OPT_UNASSIGNED"
@@ -464,7 +464,7 @@ jobs:
             # ── Status ────────────────────────────────────────────────────
             # Either label blocks the PR — a manual removal of both is respected.
             NEEDS_CHANGES=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels \
-              --jq 'any(.[].name; . == "needs-changes" or . == "question")')
+              --jq 'any(.[].name; . == ".needs-changes" or . == "question")')
 
             if [[ "$DRAFT" == "true" ]]; then
               set_status "$ITEM_ID" "$OPT_UNASSIGNED"
