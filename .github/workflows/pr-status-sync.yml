@@ -215,7 +215,20 @@ jobs:
             fi
           fi
 
-          # ── reviewer:Name label removed → remove that reviewer ───────────────
+          # ── reviewer: label added → add that reviewer ──────────────────────────────────────
+          if [[ "$ACTION" == "labeled" && "${LABEL_NAME,,}" == reviewer:* ]]; then
+            ORG_MEMBERS=$(gh api "orgs/$ORG/members" --paginate --jq '.[].login')
+            while IFS= read -r member; do
+              [[ -z "$member" ]] && continue
+              if [[ "${LABEL_NAME,,}" == "$(get_reviewer_label "$member" | tr '[:upper:]' '[:lower:]')" ]]; then
+                gh api repos/"$REPO"/pulls/"$PR_NUMBER"/requested_reviewers \
+                  -f "reviewers[]=$member"
+                break
+              fi
+            done <<< "$ORG_MEMBERS"
+          fi
+
+          # ── reviewer: label removed → remove that reviewer ─────────────────────────────────────
           if [[ "$ACTION" == "unlabeled" && "${LABEL_NAME,,}" == reviewer:* ]]; then
             ORG_MEMBERS=$(gh api "orgs/$ORG/members" --paginate --jq '.[].login')
             while IFS= read -r member; do
@@ -228,55 +241,37 @@ jobs:
             done <<< "$ORG_MEMBERS"
           fi
 
-          # ── Reconcile reviewer labels ────────────────────────────────────────
-          REVIEWER_LOGINS=$(echo "$PR_DATA" | jq -r '.requested_reviewers[].login')
+          # ── reviewer added to PR → add reviewer: label ──────────────────────────────────────
           ALL_LABELS=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels --jq '[.[].name]')
-          CURRENT_REVIEWER_LABELS=$(echo "$ALL_LABELS" | jq -r '.[] | select(startswith("reviewer:"))')
+          if [[ "$ACTION" == "review_requested" ]]; then
+            REVIEWER_LOGINS=$(echo "$PR_DATA" | jq -r '.requested_reviewers[].login')
+            while IFS= read -r login; do
+              [[ -z "$login" ]] && continue
+              LABEL=$(get_reviewer_label "$login")
+              HAS=$(echo "$ALL_LABELS" | jq --arg l "$LABEL" 'any(.[]; . == $l)')
+              if [[ "$HAS" != "true" ]]; then
+                gh api repos/"$REPO"/labels -f name="$LABEL" -f color="0075ca" >/dev/null 2>&1 || true
+                gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=$LABEL"
+              fi
+            done <<< "$REVIEWER_LOGINS"
+          fi
 
-          declare -A DESIRED_LABELS
-          while IFS= read -r login; do
-            [[ -z "$login" ]] && continue
-            LABEL=$(get_reviewer_label "$login")
-            DESIRED_LABELS["$LABEL"]=1
-          done <<< "$REVIEWER_LOGINS"
-
-          declare -A CURRENT_LABEL_SET
-          while IFS= read -r label; do
-            [[ -z "$label" ]] && continue
-            CURRENT_LABEL_SET["$label"]=1
-          done <<< "$CURRENT_REVIEWER_LABELS"
-
-          for label in "${!DESIRED_LABELS[@]}"; do
-            if [[ -z "${CURRENT_LABEL_SET[$label]+x}" ]]; then
-              gh api repos/"$REPO"/labels -f name="$label" -f color="0075ca" >/dev/null 2>&1 || true
-              gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=$label"
-            fi
-          done
-
-          MISSING_LABEL_COUNT=0
-          while IFS= read -r label; do
-            [[ -z "$label" ]] && continue
-            [[ -z "${DESIRED_LABELS[$label]+x}" ]] && MISSING_LABEL_COUNT=$((MISSING_LABEL_COUNT + 1))
-          done <<< "$CURRENT_REVIEWER_LABELS"
-
-          if [[ "$MISSING_LABEL_COUNT" -gt 0 ]]; then
-            ORG_MEMBERS=$(gh api "orgs/$ORG/members" --paginate --jq '.[].login')
-            ARGS=()
+          # ── reviewer removed from PR → remove reviewer: label ─────────────────────────────────
+          if [[ "$ACTION" == "review_request_removed" ]]; then
+            REVIEWER_LOGINS=$(echo "$PR_DATA" | jq -r '.requested_reviewers[].login')
+            CURRENT_REVIEWER_LABELS=$(echo "$ALL_LABELS" | jq -r '.[] | select(startswith("reviewer:"))')
+            declare -A REMAINING_REVIEWERS
+            while IFS= read -r login; do
+              [[ -z "$login" ]] && continue
+              REMAINING_REVIEWERS["$(get_reviewer_label "$login")"]=1
+            done <<< "$REVIEWER_LOGINS"
             while IFS= read -r label; do
               [[ -z "$label" ]] && continue
-              [[ -n "${DESIRED_LABELS[$label]+x}" ]] && continue
-              while IFS= read -r member; do
-                [[ -z "$member" ]] && continue
-                if [[ "$(get_reviewer_label "$member")" == "$label" ]]; then
-                  ARGS+=(-f "reviewers[]=$member")
-                  break
-                fi
-              done <<< "$ORG_MEMBERS"
+              if [[ -z "${REMAINING_REVIEWERS[$label]+x}" ]]; then
+                ENCODED_LABEL=$(printf '%s' "$label" | sed 's/:/%3A/g')
+                gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/"$ENCODED_LABEL" -X DELETE || true
+              fi
             done <<< "$CURRENT_REVIEWER_LABELS"
-            if [[ ${#ARGS[@]} -gt 0 ]]; then
-              gh api repos/"$REPO"/pulls/"$PR_NUMBER"/requested_reviewers \
-                -X POST "${ARGS[@]}"
-            fi
           fi
 
           # ── Assign base: label on new PRs ────────────────────────────────────
@@ -480,21 +475,8 @@ jobs:
               set_status "$ITEM_ID" "$OPT_UNASSIGNED"
             fi
 
-            # ── Reviewer labels ───────────────────────────────────────────
-            REVIEWER_LOGINS=$(echo "$PR_DATA" | jq -r '.requested_reviewers[].login')
+            # ── base: label ─────────────────────────────────────────────────────────────────
             ALL_LABELS=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels --jq '[.[].name]')
-            if [[ -n "$REVIEWER_LOGINS" ]]; then
-              while IFS= read -r login; do
-                [[ -z "$login" ]] && continue
-                LABEL=$(get_reviewer_label "$login")
-                HAS=$(echo "$ALL_LABELS" | jq --arg l "$LABEL" 'any(.[]; . == $l)')
-                if [[ "$HAS" != "true" ]]; then
-                  gh api repos/"$REPO"/labels -f name="$LABEL" -f color="0075ca" >/dev/null 2>&1 || true
-                  gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=$LABEL"
-                fi
-              done <<< "$REVIEWER_LOGINS"
-            fi
-
             # ── base: label ─────────────────────────────────────────────────────────────────
             BASE_REF=$(echo "$PR_DATA" | jq -r '.base_ref')
             BASE_LABEL="base:$BASE_REF"
