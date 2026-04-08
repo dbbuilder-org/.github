@@ -103,19 +103,57 @@ jobs:
           REVIEW_STATE: ${{ inputs.review_state }}
         run: |
           # ═════ Functions ═══════════════════════════════════════════════════════════════════════
-          get_reviewer_label() {
-            local login="$1"
-            local name first rest
-            name=$(gh api users/"$login" --jq '.name // .login')
-            first=$(echo "$name" | sed 's/[-[:space:]].*//')
-            first=$(echo "$first" | sed 's/[0-9]*$//')
-            first="${first^}"
-            rest="${first:1}"
-            if [[ "$rest" =~ [a-z] ]]; then
-              first=$(echo "$first" | sed 's/[A-Z]*$//')
+
+          # Derive the canonical "reviewer:<Name>" label for an org member.
+          # Args: LOGIN  NAME (name may be empty string)
+          #   Has a name  → first word of name          ("Ransom VanOrman" → "Ransom")
+          #   No name     → login stripped at first "-"  ("Eric-DevTest"    → "Eric")
+          #               → if result has lowercase, truncate at first uppercase
+          #                 after the first lowercase    ("RyanJ0894"       → "Ryan")
+          #               → first char uppercased        ("michael"         → "Michael")
+          compute_label() {
+            local LOGIN="$1" NAME="$2" LABEL_NAME FOUND_LOWER RESULT CHAR i
+            if [[ -n "$NAME" ]]; then
+              LABEL_NAME="${NAME%% *}"
+            else
+              LABEL_NAME="${LOGIN%%-*}"
+              if [[ "$LABEL_NAME" =~ [a-z] ]]; then
+                FOUND_LOWER=false; RESULT=""
+                for (( i=0; i<${#LABEL_NAME}; i++ )); do
+                  CHAR="${LABEL_NAME:$i:1}"
+                  if [[ "$FOUND_LOWER" == false ]]; then
+                    [[ "$CHAR" =~ [a-z] ]] && FOUND_LOWER=true
+                    RESULT+="$CHAR"
+                  else
+                    [[ "$CHAR" =~ [A-Z] ]] && break
+                    RESULT+="$CHAR"
+                  fi
+                done
+                LABEL_NAME="$RESULT"
+              fi
             fi
-            echo "reviewer:$first"
+            echo "reviewer:${LABEL_NAME^}"
           }
+
+          # Pre-fetch all org members once and build bidirectional maps:
+          #   LOGIN_TO_LABEL["login"]          → "reviewer:Name"
+          #   LABEL_TO_LOGIN["reviewer:name"]  → "login"  (lowercase key)
+          ORG_MEMBERS_DATA=$(gh api graphql \
+            -F org="$ORG" \
+            -f query='query($org: String!) {
+              organization(login: $org) {
+                membersWithRole(first: 100) {
+                  nodes { login name }
+                } } }' \
+            --jq '.data.organization.membersWithRole.nodes[] | "\(.login)\t\(.name // "")"')
+
+          declare -A LOGIN_TO_LABEL LABEL_TO_LOGIN
+          while IFS=$'\t' read -r M_LOGIN M_NAME; do
+            [[ -z "$M_LOGIN" ]] && continue
+            M_LABEL=$(compute_label "$M_LOGIN" "$M_NAME")
+            LOGIN_TO_LABEL["$M_LOGIN"]="$M_LABEL"
+            LABEL_TO_LOGIN["${M_LABEL,,}"]="$M_LOGIN"
+          done <<< "$ORG_MEMBERS_DATA"
 
           set_status() {
             gh api graphql -f query='
@@ -215,39 +253,39 @@ jobs:
             fi
           fi
 
-          # ── reviewer: label added → add that reviewer ──────────────────────────────────────
+          # ── reviewer: label added → add that reviewer ───────────────────────
           if [[ "$ACTION" == "labeled" && "${LABEL_NAME,,}" == reviewer:* ]]; then
-            ORG_MEMBERS=$(gh api "orgs/$ORG/members" --paginate --jq '.[].login')
-            while IFS= read -r member; do
-              [[ -z "$member" ]] && continue
-              if [[ "${LABEL_NAME,,}" == "$(get_reviewer_label "$member" | tr '[:upper:]' '[:lower:]')" ]]; then
-                gh api repos/"$REPO"/pulls/"$PR_NUMBER"/requested_reviewers \
-                  -f "reviewers[]=$member"
-                break
-              fi
-            done <<< "$ORG_MEMBERS"
+            LOGIN="${LABEL_TO_LOGIN[${LABEL_NAME,,}]:-}"
+            if [[ -n "$LOGIN" ]]; then
+              gh api repos/"$REPO"/pulls/"$PR_NUMBER"/requested_reviewers \
+                -f "reviewers[]=$LOGIN"
+            else
+              echo "No org member maps to label '$LABEL_NAME' — skipping"
+            fi
           fi
 
-          # ── reviewer: label removed → remove that reviewer ─────────────────────────────────────
+          # ── reviewer: label removed → remove that reviewer ──────────────────
           if [[ "$ACTION" == "unlabeled" && "${LABEL_NAME,,}" == reviewer:* ]]; then
-            ORG_MEMBERS=$(gh api "orgs/$ORG/members" --paginate --jq '.[].login')
-            while IFS= read -r member; do
-              [[ -z "$member" ]] && continue
-              if [[ "${LABEL_NAME,,}" == "$(get_reviewer_label "$member" | tr '[:upper:]' '[:lower:]')" ]]; then
-                gh api repos/"$REPO"/pulls/"$PR_NUMBER"/requested_reviewers \
-                  -X DELETE -f "reviewers[]=$member"
-                break
-              fi
-            done <<< "$ORG_MEMBERS"
+            LOGIN="${LABEL_TO_LOGIN[${LABEL_NAME,,}]:-}"
+            if [[ -n "$LOGIN" ]]; then
+              gh api repos/"$REPO"/pulls/"$PR_NUMBER"/requested_reviewers \
+                -X DELETE -f "reviewers[]=$LOGIN"
+            else
+              echo "No org member maps to label '$LABEL_NAME' — skipping"
+            fi
           fi
 
-          # ── reviewer added to PR → add reviewer: label ──────────────────────────────────────
+          # ── reviewer added to PR → add reviewer: label ─────────────────────
           ALL_LABELS=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels --jq '[.[].name]')
           if [[ "$ACTION" == "review_requested" ]]; then
             REVIEWER_LOGINS=$(echo "$PR_DATA" | jq -r '.requested_reviewers[].login')
             while IFS= read -r login; do
               [[ -z "$login" ]] && continue
-              LABEL=$(get_reviewer_label "$login")
+              LABEL="${LOGIN_TO_LABEL[$login]:-}"
+              if [[ -z "$LABEL" ]]; then
+                echo "Login '$login' not in org member map — skipping"
+                continue
+              fi
               HAS=$(echo "$ALL_LABELS" | jq --arg l "$LABEL" 'any(.[]; . == $l)')
               if [[ "$HAS" != "true" ]]; then
                 gh api repos/"$REPO"/labels -f name="$LABEL" -f color="0075ca" >/dev/null 2>&1 || true
@@ -256,14 +294,15 @@ jobs:
             done <<< "$REVIEWER_LOGINS"
           fi
 
-          # ── reviewer removed from PR → remove reviewer: label ─────────────────────────────────
+          # ── reviewer removed from PR → remove reviewer: label ──────────────
           if [[ "$ACTION" == "review_request_removed" ]]; then
             REVIEWER_LOGINS=$(echo "$PR_DATA" | jq -r '.requested_reviewers[].login')
             CURRENT_REVIEWER_LABELS=$(echo "$ALL_LABELS" | jq -r '.[] | select(startswith("reviewer:"))')
             declare -A REMAINING_REVIEWERS
             while IFS= read -r login; do
               [[ -z "$login" ]] && continue
-              REMAINING_REVIEWERS["$(get_reviewer_label "$login")"]=1
+              RLABEL="${LOGIN_TO_LABEL[$login]:-}"
+              [[ -n "$RLABEL" ]] && REMAINING_REVIEWERS["$RLABEL"]=1
             done <<< "$REVIEWER_LOGINS"
             while IFS= read -r label; do
               [[ -z "$label" ]] && continue
@@ -394,6 +433,7 @@ jobs:
           OPT_BLOCKED: ${{ inputs.OPT_BLOCKED }}
           OPT_MERGED: ${{ inputs.OPT_MERGED }}
           OPT_CLOSED: ${{ inputs.OPT_CLOSED }}
+          ORG: ${{ inputs.org }}
           REPO: ${{ inputs.repo }}
         run: |
           set_status() {
@@ -409,19 +449,49 @@ jobs:
               -f field="$PR_STATUS_FIELD_ID" -f opt="$opt"
           }
 
-          get_reviewer_label() {
-            local login="$1"
-            local name first rest
-            name=$(gh api users/"$login" --jq '.name // .login')
-            first=$(echo "$name" | sed 's/[-[:space:]].*//')
-            first=$(echo "$first" | sed 's/[0-9]*$//')
-            first="${first^}"
-            rest="${first:1}"
-            if [[ "$rest" =~ [a-z] ]]; then
-              first=$(echo "$first" | sed 's/[A-Z]*$//')
+          # Derive the canonical "reviewer:<Name>" label for an org member.
+          # Args: LOGIN  NAME (name may be empty string)
+          compute_label() {
+            local LOGIN="$1" NAME="$2" LABEL_NAME FOUND_LOWER RESULT CHAR i
+            if [[ -n "$NAME" ]]; then
+              LABEL_NAME="${NAME%% *}"
+            else
+              LABEL_NAME="${LOGIN%%-*}"
+              if [[ "$LABEL_NAME" =~ [a-z] ]]; then
+                FOUND_LOWER=false; RESULT=""
+                for (( i=0; i<${#LABEL_NAME}; i++ )); do
+                  CHAR="${LABEL_NAME:$i:1}"
+                  if [[ "$FOUND_LOWER" == false ]]; then
+                    [[ "$CHAR" =~ [a-z] ]] && FOUND_LOWER=true
+                    RESULT+="$CHAR"
+                  else
+                    [[ "$CHAR" =~ [A-Z] ]] && break
+                    RESULT+="$CHAR"
+                  fi
+                done
+                LABEL_NAME="$RESULT"
+              fi
             fi
-            echo "reviewer:$first"
+            echo "reviewer:${LABEL_NAME^}"
           }
+
+          # Pre-fetch all org members once and build bidirectional maps
+          ORG_MEMBERS_DATA=$(gh api graphql \
+            -F org="$ORG" \
+            -f query='query($org: String!) {
+              organization(login: $org) {
+                membersWithRole(first: 100) {
+                  nodes { login name }
+                } } }' \
+            --jq '.data.organization.membersWithRole.nodes[] | "\(.login)\t\(.name // "")"')
+
+          declare -A LOGIN_TO_LABEL LABEL_TO_LOGIN
+          while IFS=$'\t' read -r M_LOGIN M_NAME; do
+            [[ -z "$M_LOGIN" ]] && continue
+            M_LABEL=$(compute_label "$M_LOGIN" "$M_NAME")
+            LOGIN_TO_LABEL["$M_LOGIN"]="$M_LABEL"
+            LABEL_TO_LOGIN["${M_LABEL,,}"]="$M_LOGIN"
+          done <<< "$ORG_MEMBERS_DATA"
 
           get_item_id() {
             local pr_node_id="$1"
@@ -476,7 +546,8 @@ jobs:
             fi
 
             ALL_LABELS=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels --jq '[.[].name]')
-            # ── base: label ─────────────────────────────────────────────────────────────────
+
+            # ── base: label ──────────────────────────────────────────────────
             BASE_REF=$(echo "$PR_DATA" | jq -r '.base_ref')
             BASE_LABEL="base:$BASE_REF"
             HAS_BASE=$(echo "$ALL_LABELS" | jq --arg l "$BASE_LABEL" 'any(.[]; . == $l)')
@@ -484,6 +555,41 @@ jobs:
               gh api repos/"$REPO"/labels -f name="$BASE_LABEL" -f color="0e8a16" >/dev/null 2>&1 || true
               gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=$BASE_LABEL"
             fi
+
+            # ── Reviewer ↔ label reconciliation ─────────────────────────────
+            REVIEWERS=$(echo "$PR_DATA" | jq -r '[.requested_reviewers[].login] | join(" ")')
+            RAW_REVIEWER_LABELS=$(echo "$ALL_LABELS" | jq -r '.[] | select(startswith("reviewer:"))')
+
+            # Add labels for reviewers that have none
+            for REVIEWER in $REVIEWERS; do
+              [[ -z "$REVIEWER" ]] && continue
+              EXPECTED_LABEL="${LOGIN_TO_LABEL[$REVIEWER]:-}"
+              if [[ -z "$EXPECTED_LABEL" ]]; then
+                echo "PR #$PR_NUMBER: '$REVIEWER' not in org map — skipping"
+                continue
+              fi
+              HAS=$(echo "$ALL_LABELS" | jq --arg l "$EXPECTED_LABEL" 'any(.[]; . == $l)')
+              if [[ "$HAS" != "true" ]]; then
+                echo "PR #$PR_NUMBER: adding missing label '$EXPECTED_LABEL' for reviewer '$REVIEWER'"
+                gh api repos/"$REPO"/labels -f name="$EXPECTED_LABEL" -f color="0075ca" >/dev/null 2>&1 || true
+                gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=$EXPECTED_LABEL"
+              fi
+            done
+
+            # Add reviewers for labels that have none
+            while IFS= read -r RLABEL; do
+              [[ -z "$RLABEL" ]] && continue
+              EXPECTED_LOGIN="${LABEL_TO_LOGIN[${RLABEL,,}]:-}"
+              if [[ -z "$EXPECTED_LOGIN" ]]; then
+                echo "PR #$PR_NUMBER: label '$RLABEL' has no matching org member — skipping"
+                continue
+              fi
+              if [[ ! " $REVIEWERS " =~ " $EXPECTED_LOGIN " ]]; then
+                echo "PR #$PR_NUMBER: adding missing reviewer '$EXPECTED_LOGIN' for label '$RLABEL'"
+                gh pr edit "$PR_NUMBER" --repo "$REPO" --add-reviewer "$EXPECTED_LOGIN" || true
+              fi
+            done <<< "$RAW_REVIEWER_LABELS"
+
           done
 
           # ── Recently closed/merged PRs: fix status ─────────────────────────
