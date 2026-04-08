@@ -147,7 +147,8 @@ jobs:
             requested_reviewers: .requested_reviewers,
             merged: .merged,
             state: .state,
-            draft: .draft
+            draft: .draft,
+            base_ref: .base.ref
           }')
           REVIEWER_COUNT=$(echo "$PR_DATA" | jq '.requested_reviewers | length')
           MERGED=$(echo "$PR_DATA" | jq -r '.merged')
@@ -278,7 +279,15 @@ jobs:
             fi
           fi
 
-          # ── Sync needs-changes label ─────────────────────────────────────────
+                    # ── Assign base: label on new PRs ────────────────────────────────────
+          if [[ "$ACTION" == "opened" ]]; then
+            BASE_REF=$(echo "$PR_DATA" | jq -r '.base_ref')
+            BASE_LABEL="base:$BASE_REF"
+            gh api repos/"$REPO"/labels -f name="$BASE_LABEL" -f color="0e8a16" >/dev/null 2>&1 || true
+            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=$BASE_LABEL"
+          fi
+
+# ── Sync needs-changes label ─────────────────────────────────────────
           if [[ "$REVIEW_STATE" == "CHANGES_REQUESTED" ]]; then
             gh api repos/"$REPO"/labels -f name="needs-changes" -f color="e11d48" >/dev/null 2>&1 || true
             gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=needs-changes"
@@ -440,7 +449,8 @@ jobs:
               requested_reviewers: .requested_reviewers,
               merged: .merged,
               state: .state,
-              draft: .draft
+              draft: .draft,
+              base_ref: .base.ref
             }')
             PR_NODE_ID=$(echo "$PR_DATA" | jq -r '.node_id')
             REVIEWER_COUNT=$(echo "$PR_DATA" | jq '.requested_reviewers | length')
@@ -472,8 +482,8 @@ jobs:
 
             # ── Reviewer labels ───────────────────────────────────────────
             REVIEWER_LOGINS=$(echo "$PR_DATA" | jq -r '.requested_reviewers[].login')
+            ALL_LABELS=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels --jq '[.[].name]')
             if [[ -n "$REVIEWER_LOGINS" ]]; then
-              ALL_LABELS=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels --jq '[.[].name]')
               while IFS= read -r login; do
                 [[ -z "$login" ]] && continue
                 LABEL=$(get_reviewer_label "$login")
@@ -483,6 +493,15 @@ jobs:
                   gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=$LABEL"
                 fi
               done <<< "$REVIEWER_LOGINS"
+            fi
+
+            # ── base: label ─────────────────────────────────────────────────────────────────
+            BASE_REF=$(echo "$PR_DATA" | jq -r '.base_ref')
+            BASE_LABEL="base:$BASE_REF"
+            HAS_BASE=$(echo "$ALL_LABELS" | jq --arg l "$BASE_LABEL" 'any(.[]; . == $l)')
+            if [[ "$HAS_BASE" != "true" ]]; then
+              gh api repos/"$REPO"/labels -f name="$BASE_LABEL" -f color="0e8a16" >/dev/null 2>&1 || true
+              gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=$BASE_LABEL"
             fi
           done
 
