@@ -475,7 +475,6 @@ jobs:
               set_status "$ITEM_ID" "$OPT_UNASSIGNED"
             fi
 
-            # ── base: label ─────────────────────────────────────────────────────────────────
             ALL_LABELS=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels --jq '[.[].name]')
             # ── base: label ─────────────────────────────────────────────────────────────────
             BASE_REF=$(echo "$PR_DATA" | jq -r '.base_ref')
