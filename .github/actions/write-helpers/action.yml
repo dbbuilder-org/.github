@@ -1,0 +1,9 @@
+name: Write PR helper functions
+description: Copies shared bash helper functions to /tmp/pr-helpers.sh for use in subsequent steps
+
+runs:
+  using: composite
+  steps:
+    - name: Write helpers
+      shell: bash
+      run: cp "${{ github.action_path }}/pr-helpers.sh" /tmp/pr-helpers.sh
