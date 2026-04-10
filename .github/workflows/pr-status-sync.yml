@@ -75,7 +75,9 @@ on:
         type: string
         default: ''
     secrets:
-      project_token:
+      app_id:
+        required: true
+      app_private_key:
         required: true
 
 permissions:
@@ -91,8 +93,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.app_id }}
+          private-key: ${{ secrets.app_private_key }}
       - env:
-          GH_TOKEN: ${{ secrets.project_token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PROJECT_ID: ${{ inputs.PROJECT_ID }}
           PR_STATUS_FIELD_ID: ${{ inputs.PR_STATUS_FIELD_ID }}
           ITERATION_FIELD_ID: ${{ inputs.ITERATION_FIELD_ID }}
@@ -120,8 +127,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.app_id }}
+          private-key: ${{ secrets.app_private_key }}
       - env:
-          GH_TOKEN: ${{ secrets.project_token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PROJECT_ID: ${{ inputs.PROJECT_ID }}
           PR_STATUS_FIELD_ID: ${{ inputs.PR_STATUS_FIELD_ID }}
           OPT_UNASSIGNED: ${{ inputs.OPT_UNASSIGNED }}
@@ -160,8 +172,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.app_id }}
+          private-key: ${{ secrets.app_private_key }}
       - env:
-          GH_TOKEN: ${{ secrets.project_token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PROJECT_ID: ${{ inputs.PROJECT_ID }}
           PR_STATUS_FIELD_ID: ${{ inputs.PR_STATUS_FIELD_ID }}
           OPT_UNASSIGNED: ${{ inputs.OPT_UNASSIGNED }}
@@ -200,8 +217,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.app_id }}
+          private-key: ${{ secrets.app_private_key }}
       - env:
-          GH_TOKEN: ${{ secrets.project_token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PROJECT_ID: ${{ inputs.PROJECT_ID }}
           PR_STATUS_FIELD_ID: ${{ inputs.PR_STATUS_FIELD_ID }}
           OPT_UNASSIGNED: ${{ inputs.OPT_UNASSIGNED }}
@@ -235,8 +257,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.app_id }}
+          private-key: ${{ secrets.app_private_key }}
       - env:
-          GH_TOKEN: ${{ secrets.project_token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PROJECT_ID: ${{ inputs.PROJECT_ID }}
           PR_STATUS_FIELD_ID: ${{ inputs.PR_STATUS_FIELD_ID }}
           OPT_UNASSIGNED: ${{ inputs.OPT_UNASSIGNED }}
@@ -270,8 +297,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.app_id }}
+          private-key: ${{ secrets.app_private_key }}
       - env:
-          GH_TOKEN: ${{ secrets.project_token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PROJECT_ID: ${{ inputs.PROJECT_ID }}
           PR_STATUS_FIELD_ID: ${{ inputs.PR_STATUS_FIELD_ID }}
           OPT_UNASSIGNED: ${{ inputs.OPT_UNASSIGNED }}
@@ -294,8 +326,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.app_id }}
+          private-key: ${{ secrets.app_private_key }}
       - env:
-          GH_TOKEN: ${{ secrets.project_token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PROJECT_ID: ${{ inputs.PROJECT_ID }}
           PR_STATUS_FIELD_ID: ${{ inputs.PR_STATUS_FIELD_ID }}
           OPT_UNASSIGNED: ${{ inputs.OPT_UNASSIGNED }}
@@ -321,8 +358,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.app_id }}
+          private-key: ${{ secrets.app_private_key }}
       - env:
-          GH_TOKEN: ${{ secrets.project_token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PROJECT_ID: ${{ inputs.PROJECT_ID }}
           PR_STATUS_FIELD_ID: ${{ inputs.PR_STATUS_FIELD_ID }}
           OPT_UNASSIGNED: ${{ inputs.OPT_UNASSIGNED }}
@@ -343,8 +385,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.app_id }}
+          private-key: ${{ secrets.app_private_key }}
       - env:
-          GH_TOKEN: ${{ secrets.project_token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PROJECT_ID: ${{ inputs.PROJECT_ID }}
           PR_STATUS_FIELD_ID: ${{ inputs.PR_STATUS_FIELD_ID }}
           OPT_UNASSIGNED: ${{ inputs.OPT_UNASSIGNED }}
@@ -406,8 +453,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.app_id }}
+          private-key: ${{ secrets.app_private_key }}
       - env:
-          GH_TOKEN: ${{ secrets.project_token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PROJECT_ID: ${{ inputs.PROJECT_ID }}
           PR_STATUS_FIELD_ID: ${{ inputs.PR_STATUS_FIELD_ID }}
           ITERATION_FIELD_ID: ${{ inputs.ITERATION_FIELD_ID }}
