@@ -374,6 +374,8 @@ jobs:
           if [[ "$OLD_STATUS" == "Blocked" ]]; then
             gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/.needs-changes -X DELETE || true
             gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/.question -X DELETE || true
+            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/.hold -X DELETE || true
+            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/.needs-decision -X DELETE || true
           fi
 
           if [[ "$NEW_STATUS" == "Blocked" ]]; then

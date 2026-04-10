@@ -157,7 +157,7 @@ set_pr_status() {
   closed=$(echo "$pr_data" | jq -r '.state == "closed"')
   reviewer_count=$(echo "$pr_data" | jq -r '.reviewer_count')
   needs_changes=$(gh api repos/"$repo"/issues/"$pr_number"/labels \
-    --jq 'any(.[].name; . == ".needs-changes" or . == ".question")')
+    --jq 'any(.[].name; . == ".needs-changes" or . == ".question" or . == ".hold" or . == ".needs-decision")')
 
   if   [[ "$merged"         == "true" ]]; then opt="$OPT_MERGED"
   elif [[ "$closed"         == "true" ]]; then opt="$OPT_CLOSED"
