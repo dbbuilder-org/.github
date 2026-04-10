@@ -1,0 +1,85 @@
+name: Project Board Drag Handler
+
+on:
+  projects_v2_item:
+    types: [edited]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  handle-drag:
+    # Only act when the PR Status field changed on a PullRequest item
+    if: >
+      github.event.changes.field_value.field_name == 'Status' &&
+      github.event.projects_v2_item.content_type == 'PullRequest'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
+
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.WORKFLOW_APP_ID }}
+          private-key: ${{ secrets.WORKFLOW_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PROJECT_ID: "PVT_kwDODmqj9M4BQ_g8"
+          PR_STATUS_FIELD_ID: "PVTSSF_lADODmqj9M4BQ_g8zg-9EB0"
+          ITERATION_FIELD_ID: "PVTIF_lADODmqj9M4BQ_g8zg-89P4"
+          OPT_UNASSIGNED: "d7a91005"
+          OPT_IN_QUEUE: "0e9ca88f"
+          OPT_BLOCKED: "fec0dae0"
+          OPT_MERGED: "82a10391"
+          OPT_CLOSED: "a90c2a6f"
+          CONTENT_NODE_ID: ${{ github.event.projects_v2_item.content_node_id }}
+          OLD_STATUS: ${{ github.event.changes.field_value.from }}
+          NEW_STATUS: ${{ github.event.changes.field_value.to }}
+        run: |
+          source /tmp/pr-helpers.sh
+
+          PR_INFO=$(gh api graphql -f query='
+            query($id: ID!) {
+              node(id: $id) {
+                ... on PullRequest {
+                  number
+                  repository { nameWithOwner }
+                }
+              }
+            }' -f id="$CONTENT_NODE_ID" \
+            --jq '.data.node | "\(.number) \(.repository.nameWithOwner)"')
+          PR_NUMBER=$(echo "$PR_INFO" | cut -d' ' -f1)
+          REPO=$(echo "$PR_INFO" | cut -d' ' -f2-)
+
+          if [[ "$OLD_STATUS" == "Blocked" ]]; then
+            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/%2Eneeds-changes -X DELETE || true
+            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/%2Equestion -X DELETE || true
+            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/%2Ehold -X DELETE || true
+            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/%2Eneeds-decision -X DELETE || true
+          fi
+
+          if [[ "$NEW_STATUS" == "Blocked" ]]; then
+            gh api repos/"$REPO"/labels -f name=".needs-changes" -f color="e11d48" >/dev/null 2>&1 || true
+            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=.needs-changes"
+          elif [[ "$NEW_STATUS" == "Unassigned" ]]; then
+            REVIEWER_LOGINS=$(gh api repos/"$REPO"/pulls/"$PR_NUMBER" \
+              --jq '.requested_reviewers[].login')
+            while IFS= read -r LOGIN; do
+              [[ -z "$LOGIN" ]] && continue
+              gh api repos/"$REPO"/pulls/"$PR_NUMBER"/requested_reviewers \
+                -X DELETE -f "reviewers[]=$LOGIN"
+            done <<< "$REVIEWER_LOGINS"
+            REVIEWER_LABELS=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels \
+              --jq '[.[].name] | .[] | select(startswith("reviewer:"))')
+            while IFS= read -r RLABEL; do
+              [[ -z "$RLABEL" ]] && continue
+              ENCODED=$(printf '%s' "$RLABEL" | sed 's/:/%3A/g')
+              gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/"$ENCODED" -X DELETE || true
+            done <<< "$REVIEWER_LABELS"
+          fi
+
+          set_pr_status "$CONTENT_NODE_ID" "$PR_NUMBER" "$REPO"
