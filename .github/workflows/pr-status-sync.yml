@@ -348,7 +348,7 @@ jobs:
           PENDING=$(gh api repos/"$REPO"/pulls/"$PR_NUMBER"/reviews \
             --jq '[.[] | select(.state == "CHANGES_REQUESTED")] | length')
           if [[ "$PENDING" -eq 0 ]]; then
-            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/.needs-changes -X DELETE || true
+            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/%2Eneeds-changes -X DELETE || true
           fi
           set_pr_status "$PR_NODE_ID" "$PR_NUMBER" "$REPO"
 
@@ -419,10 +419,10 @@ jobs:
           REPO=$(echo "$PR_INFO" | cut -d' ' -f2-)
 
           if [[ "$OLD_STATUS" == "Blocked" ]]; then
-            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/.needs-changes -X DELETE || true
-            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/.question -X DELETE || true
-            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/.hold -X DELETE || true
-            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/.needs-decision -X DELETE || true
+            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/%2Eneeds-changes -X DELETE || true
+            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/%2Equestion -X DELETE || true
+            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/%2Ehold -X DELETE || true
+            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/%2Eneeds-decision -X DELETE || true
           fi
 
           if [[ "$NEW_STATUS" == "Blocked" ]]; then
