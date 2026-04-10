@@ -71,6 +71,72 @@ get_item_id() {
     --jq '.data.addProjectV2ItemById.item.id'
 }
 
+# Assign the current sprint iteration to a project item, if not already set.
+# Args: ITEM_ID
+# Requires env vars: PROJECT_ID, ITERATION_FIELD_ID (skipped if blank)
+assign_iteration() {
+  local item_id="$1"
+  [[ -z "$ITERATION_FIELD_ID" ]] && return 0
+
+  local existing
+  existing=$(gh api graphql -f query='
+    query($item: ID!) {
+      node(id: $item) {
+        ... on ProjectV2Item {
+          fieldValues(first: 20) {
+            nodes {
+              ... on ProjectV2ItemFieldIterationValue { iterationId }
+            }
+          }
+        }
+      }
+    }' \
+    -f item="$item_id" \
+    --jq '.data.node.fieldValues.nodes[] | select(.iterationId != null) | .iterationId' \
+    | head -1)
+  [[ -n "$existing" ]] && return 0
+
+  local current_iter
+  current_iter=$(gh api graphql -f query='
+    query($proj: ID!) {
+      node(id: $proj) {
+        ... on ProjectV2 {
+          fields(first: 20) {
+            nodes {
+              ... on ProjectV2IterationField {
+                id
+                configuration {
+                  iterations { id startDate duration }
+                }
+              }
+            }
+          }
+        }
+      }
+    }' \
+    -f proj="$PROJECT_ID" \
+    --jq --argjson today "$(date -u +%s)" '
+      .data.node.fields.nodes[] |
+      select(.configuration != null) |
+      .configuration.iterations[] |
+      select(
+        (.startDate | strptime("%Y-%m-%d") | mktime) <= $today and
+        ((.startDate | strptime("%Y-%m-%d") | mktime) + (.duration * 86400)) > $today
+      ) | .id' \
+    | head -1)
+  [[ -z "$current_iter" ]] && return 0
+
+  gh api graphql -f query='
+    mutation($proj: ID!, $item: ID!, $field: ID!, $iter: String!) {
+      updateProjectV2ItemFieldValue(input: {
+        projectId: $proj, itemId: $item,
+        fieldId: $field, value: { iterationId: $iter }
+      }) { projectV2Item { id } }
+    }' \
+    -f proj="$PROJECT_ID" -f item="$item_id" \
+    -f field="$ITERATION_FIELD_ID" -f iter="$current_iter"
+}
+
 # Determine the correct PR status and update the project board.
 # Args: PR_NODE_ID  PR_NUMBER  REPO
 # Requires env vars: GH_TOKEN, PROJECT_ID, PR_STATUS_FIELD_ID,

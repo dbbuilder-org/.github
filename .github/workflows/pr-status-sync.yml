@@ -37,8 +37,9 @@ on:
         required: true
         type: string
       org:
-        required: true
+        required: false
         type: string
+        default: ''
       # ── PR event data ─────────────────────────────────────────────────────
       pr_node_id:
         required: false
@@ -65,7 +66,11 @@ on:
         required: false
         type: string
         default: ''
-      item_node_id:
+      old_status:
+        required: false
+        type: string
+        default: ''
+      new_status:
         required: false
         type: string
         default: ''
@@ -75,16 +80,18 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
+  pull-requests: write
+  issues: write
 
 jobs:
-  sync-status:
-    if: inputs.event_name != 'schedule' && inputs.event_name != 'repository_dispatch' && inputs.event_name != 'workflow_dispatch'
+
+  # ── pull_request_target: opened, reopened ─────────────────────────────────
+  open-pr:
+    if: inputs.event_name == 'pull_request_target' && (inputs.action == 'opened' || inputs.action == 'reopened')
     runs-on: ubuntu-latest
     steps:
-      - name: Sync reviewer labels and set PR status
-        continue-on-error: true
-        env:
+      - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
+      - env:
           GH_TOKEN: ${{ secrets.project_token }}
           PROJECT_ID: ${{ inputs.PROJECT_ID }}
           PR_STATUS_FIELD_ID: ${{ inputs.PR_STATUS_FIELD_ID }}
@@ -97,265 +104,246 @@ jobs:
           PR_NODE_ID: ${{ inputs.pr_node_id }}
           PR_NUMBER: ${{ inputs.pr_number }}
           REPO: ${{ inputs.repo }}
-          ORG: ${{ inputs.org }}
-          ACTION: ${{ inputs.action }}
-          LABEL_NAME: ${{ inputs.label_name }}
-          REVIEW_STATE: ${{ inputs.review_state }}
         run: |
-          # ═════ Functions ═══════════════════════════════════════════════════════════════════════
+          source /tmp/pr-helpers.sh
+          BASE_REF=$(gh api repos/"$REPO"/pulls/"$PR_NUMBER" --jq '.base.ref')
+          BASE_LABEL="base:$BASE_REF"
+          gh api repos/"$REPO"/labels -f name="$BASE_LABEL" -f color="0e8a16" >/dev/null 2>&1 || true
+          gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=$BASE_LABEL"
+          ITEM_ID=$(get_item_id "$PR_NODE_ID")
+          assign_iteration "$ITEM_ID"
+          set_pr_status "$PR_NODE_ID" "$PR_NUMBER" "$REPO"
 
-          # Derive the canonical "reviewer:<Name>" label for an org member.
-          # Args: LOGIN  NAME (name may be empty string)
-          #   Has a name  → first word of name          ("Ransom VanOrman" → "Ransom")
-          #   No name     → login stripped at first "-"  ("Eric-DevTest"    → "Eric")
-          #               → if result has lowercase, truncate at first uppercase
-          #                 after the first lowercase    ("RyanJ0894"       → "Ryan")
-          #               → first char uppercased        ("michael"         → "Michael")
-          compute_label() {
-            local LOGIN="$1" NAME="$2" LABEL_NAME FOUND_LOWER RESULT CHAR i
-            if [[ -n "$NAME" ]]; then
-              LABEL_NAME="${NAME%% *}"
-            else
-              LABEL_NAME="${LOGIN%%-*}"
-              if [[ "$LABEL_NAME" =~ [a-z] ]]; then
-                FOUND_LOWER=false; RESULT=""
-                for (( i=0; i<${#LABEL_NAME}; i++ )); do
-                  CHAR="${LABEL_NAME:$i:1}"
-                  if [[ "$FOUND_LOWER" == false ]]; then
-                    [[ "$CHAR" =~ [a-z] ]] && FOUND_LOWER=true
-                    RESULT+="$CHAR"
-                  else
-                    [[ "$CHAR" =~ [A-Z] ]] && break
-                    RESULT+="$CHAR"
-                  fi
-                done
-                LABEL_NAME="$RESULT"
-              fi
+  # ── pull_request_target: review_requested ────────────────────────────────
+  review-requested:
+    if: inputs.event_name == 'pull_request_target' && inputs.action == 'review_requested'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
+      - env:
+          GH_TOKEN: ${{ secrets.project_token }}
+          PROJECT_ID: ${{ inputs.PROJECT_ID }}
+          PR_STATUS_FIELD_ID: ${{ inputs.PR_STATUS_FIELD_ID }}
+          OPT_UNASSIGNED: ${{ inputs.OPT_UNASSIGNED }}
+          OPT_IN_QUEUE: ${{ inputs.OPT_IN_QUEUE }}
+          OPT_BLOCKED: ${{ inputs.OPT_BLOCKED }}
+          OPT_MERGED: ${{ inputs.OPT_MERGED }}
+          OPT_CLOSED: ${{ inputs.OPT_CLOSED }}
+          PR_NODE_ID: ${{ inputs.pr_node_id }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          REPO: ${{ inputs.repo }}
+          ORG: ${{ inputs.org }}
+        run: |
+          source /tmp/pr-helpers.sh
+          build_member_maps
+          ALL_LABELS=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels --jq '[.[].name]')
+          REVIEWER_LOGINS=$(gh api repos/"$REPO"/pulls/"$PR_NUMBER" --jq '.requested_reviewers[].login')
+          while IFS= read -r LOGIN; do
+            [[ -z "$LOGIN" ]] && continue
+            SIMPLE_NAME="${LOGIN_TO_LABEL[$LOGIN]:-}"
+            if [[ -z "$SIMPLE_NAME" ]]; then
+              echo "Login '$LOGIN' not in org member map — skipping"
+              continue
             fi
-            echo "reviewer:${LABEL_NAME^}"
-          }
-
-          # Pre-fetch all org members once and build bidirectional maps:
-          #   LOGIN_TO_LABEL["login"]          → "reviewer:Name"
-          #   LABEL_TO_LOGIN["reviewer:name"]  → "login"  (lowercase key)
-          ORG_MEMBERS_DATA=$(gh api graphql \
-            -F org="$ORG" \
-            -f query='query($org: String!) {
-              organization(login: $org) {
-                membersWithRole(first: 100) {
-                  nodes { login name }
-                } } }' \
-            --jq '.data.organization.membersWithRole.nodes[] | "\(.login)\t\(.name // "")"')
-
-          declare -A LOGIN_TO_LABEL LABEL_TO_LOGIN
-          while IFS=$'\t' read -r M_LOGIN M_NAME; do
-            [[ -z "$M_LOGIN" ]] && continue
-            M_LABEL=$(compute_label "$M_LOGIN" "$M_NAME")
-            LOGIN_TO_LABEL["$M_LOGIN"]="$M_LABEL"
-            LABEL_TO_LOGIN["${M_LABEL,,}"]="$M_LOGIN"
-          done <<< "$ORG_MEMBERS_DATA"
-
-          set_status() {
-            gh api graphql -f query='
-              mutation($proj: ID!, $item: ID!, $field: ID!, $opt: String!) {
-                updateProjectV2ItemFieldValue(input: {
-                  projectId: $proj, itemId: $item,
-                  fieldId: $field, value: { singleSelectOptionId: $opt }
-                }) { projectV2Item { id } }
-              }' \
-              -f proj="$PROJECT_ID" -f item="$ITEM_ID" \
-              -f field="$PR_STATUS_FIELD_ID" -f opt="$1"
-          }
-
-          # ═════ Variables ═══════════════════════════════════════════════════════════════════════
-          ITEM_ID=$(gh api graphql -f query='
-            mutation($proj: ID!, $pr: ID!) {
-              addProjectV2ItemById(input: { projectId: $proj, contentId: $pr }) {
-                item { id }
-              }
-            }' \
-            -f proj="$PROJECT_ID" -f pr="$PR_NODE_ID" \
-            --jq '.data.addProjectV2ItemById.item.id')
-          if [[ -z "$ITEM_ID" ]]; then
-            echo "Error: failed to retrieve pull request item ID." >&2
-            exit 1
-          fi
-
-          PR_DATA=$(gh api repos/"$REPO"/pulls/"$PR_NUMBER" --jq '{
-            requested_reviewers: .requested_reviewers,
-            merged: .merged,
-            state: .state,
-            draft: .draft,
-            base_ref: .base.ref
-          }')
-          REVIEWER_COUNT=$(echo "$PR_DATA" | jq '.requested_reviewers | length')
-          MERGED=$(echo "$PR_DATA" | jq -r '.merged')
-          CLOSED=$(echo "$PR_DATA" | jq -r '.state == "closed"')
-          DRAFT=$(echo "$PR_DATA" | jq -r '.draft')
-
-          # ═════ Run ═════════════════════════════════════════════════════════════════════════════
-          # ── Assign current iteration if field is configured ──────────────────
-          if [[ -n "$ITERATION_FIELD_ID" ]]; then
-            EXISTING_ITER=$(gh api graphql -f query='
-              query($item: ID!) {
-                node(id: $item) {
-                  ... on ProjectV2Item {
-                    fieldValues(first: 20) {
-                      nodes {
-                        ... on ProjectV2ItemFieldIterationValue { iterationId }
-                      }
-                    }
-                  }
-                }
-              }' \
-              -f item="$ITEM_ID" \
-              --jq '.data.node.fieldValues.nodes[] | select(.iterationId != null) | .iterationId' \
-              | head -1)
-            if [[ -z "$EXISTING_ITER" ]]; then
-              CURRENT_ITER_ID=$(gh api graphql -f query='
-                query($proj: ID!) {
-                  node(id: $proj) {
-                    ... on ProjectV2 {
-                      fields(first: 20) {
-                        nodes {
-                          ... on ProjectV2IterationField {
-                            id
-                            configuration {
-                              iterations { id startDate duration }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }' \
-                -f proj="$PROJECT_ID" \
-                --jq --argjson today "$(date -u +%s)" '
-                  .data.node.fields.nodes[] |
-                  select(.configuration != null) |
-                  .configuration.iterations[] |
-                  select(
-                    (.startDate | strptime("%Y-%m-%d") | mktime) <= $today and
-                    ((.startDate | strptime("%Y-%m-%d") | mktime) + (.duration * 86400)) > $today
-                  ) | .id' \
-                | head -1)
-              if [[ -n "$CURRENT_ITER_ID" ]]; then
-                gh api graphql -f query='
-                  mutation($proj: ID!, $item: ID!, $field: ID!, $iter: String!) {
-                    updateProjectV2ItemFieldValue(input: {
-                      projectId: $proj, itemId: $item,
-                      fieldId: $field, value: { iterationId: $iter }
-                    }) { projectV2Item { id } }
-                  }' \
-                  -f proj="$PROJECT_ID" -f item="$ITEM_ID" \
-                  -f field="$ITERATION_FIELD_ID" -f iter="$CURRENT_ITER_ID"
-              fi
+            LABEL="reviewer:$SIMPLE_NAME"
+            HAS=$(echo "$ALL_LABELS" | jq --arg l "$LABEL" 'any(.[]; . == $l)')
+            if [[ "$HAS" != "true" ]]; then
+              gh api repos/"$REPO"/labels -f name="$LABEL" -f color="0075ca" >/dev/null 2>&1 || true
+              gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=$LABEL"
             fi
-          fi
+          done <<< "$REVIEWER_LOGINS"
+          set_pr_status "$PR_NODE_ID" "$PR_NUMBER" "$REPO"
 
-          # ── reviewer: label added → add that reviewer ───────────────────────
-          if [[ "$ACTION" == "labeled" && "${LABEL_NAME,,}" == reviewer:* ]]; then
-            LOGIN="${LABEL_TO_LOGIN[${LABEL_NAME,,}]:-}"
+  # ── pull_request_target: review_request_removed ──────────────────────────
+  review-request-removed:
+    if: inputs.event_name == 'pull_request_target' && inputs.action == 'review_request_removed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
+      - env:
+          GH_TOKEN: ${{ secrets.project_token }}
+          PROJECT_ID: ${{ inputs.PROJECT_ID }}
+          PR_STATUS_FIELD_ID: ${{ inputs.PR_STATUS_FIELD_ID }}
+          OPT_UNASSIGNED: ${{ inputs.OPT_UNASSIGNED }}
+          OPT_IN_QUEUE: ${{ inputs.OPT_IN_QUEUE }}
+          OPT_BLOCKED: ${{ inputs.OPT_BLOCKED }}
+          OPT_MERGED: ${{ inputs.OPT_MERGED }}
+          OPT_CLOSED: ${{ inputs.OPT_CLOSED }}
+          PR_NODE_ID: ${{ inputs.pr_node_id }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          REPO: ${{ inputs.repo }}
+          ORG: ${{ inputs.org }}
+        run: |
+          source /tmp/pr-helpers.sh
+          build_member_maps
+          REVIEWERS=$(gh api repos/"$REPO"/pulls/"$PR_NUMBER" \
+            --jq '[.requested_reviewers[].login] | join(" ")')
+          ALL_LABELS=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels --jq '[.[].name]')
+          CURRENT_REVIEWER_LABELS=$(echo "$ALL_LABELS" | jq -r '.[] | select(startswith("reviewer:"))')
+          declare -A REMAINING_REVIEWERS
+          for LOGIN in $REVIEWERS; do
+            SIMPLE_NAME="${LOGIN_TO_LABEL[$LOGIN]:-}"
+            [[ -n "$SIMPLE_NAME" ]] && REMAINING_REVIEWERS["reviewer:$SIMPLE_NAME"]=1
+          done
+          while IFS= read -r RLABEL; do
+            [[ -z "$RLABEL" ]] && continue
+            if [[ -z "${REMAINING_REVIEWERS[$RLABEL]+x}" ]]; then
+              ENCODED=$(printf '%s' "$RLABEL" | sed 's/:/%3A/g')
+              gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/"$ENCODED" -X DELETE || true
+            fi
+          done <<< "$CURRENT_REVIEWER_LABELS"
+          set_pr_status "$PR_NODE_ID" "$PR_NUMBER" "$REPO"
+
+  # ── pull_request_target: labeled ─────────────────────────────────────────
+  labeled:
+    if: inputs.event_name == 'pull_request_target' && inputs.action == 'labeled'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
+      - env:
+          GH_TOKEN: ${{ secrets.project_token }}
+          PROJECT_ID: ${{ inputs.PROJECT_ID }}
+          PR_STATUS_FIELD_ID: ${{ inputs.PR_STATUS_FIELD_ID }}
+          OPT_UNASSIGNED: ${{ inputs.OPT_UNASSIGNED }}
+          OPT_IN_QUEUE: ${{ inputs.OPT_IN_QUEUE }}
+          OPT_BLOCKED: ${{ inputs.OPT_BLOCKED }}
+          OPT_MERGED: ${{ inputs.OPT_MERGED }}
+          OPT_CLOSED: ${{ inputs.OPT_CLOSED }}
+          PR_NODE_ID: ${{ inputs.pr_node_id }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          REPO: ${{ inputs.repo }}
+          ORG: ${{ inputs.org }}
+          LABEL_NAME: ${{ inputs.label_name }}
+        run: |
+          source /tmp/pr-helpers.sh
+          if [[ "${LABEL_NAME,,}" == reviewer:* ]]; then
+            build_member_maps
+            SIMPLE_NAME="${LABEL_NAME#*:}"
+            LOGIN="${LABEL_TO_LOGIN[${SIMPLE_NAME,,}]:-}"
             if [[ -n "$LOGIN" ]]; then
               gh api repos/"$REPO"/pulls/"$PR_NUMBER"/requested_reviewers \
                 -f "reviewers[]=$LOGIN"
             else
-              echo "No org member maps to label '$LABEL_NAME' — skipping"
+              echo "No org member maps to label '$LABEL_NAME' — skipping reviewer add"
             fi
           fi
+          set_pr_status "$PR_NODE_ID" "$PR_NUMBER" "$REPO"
 
-          # ── reviewer: label removed → remove that reviewer ──────────────────
-          if [[ "$ACTION" == "unlabeled" && "${LABEL_NAME,,}" == reviewer:* ]]; then
-            LOGIN="${LABEL_TO_LOGIN[${LABEL_NAME,,}]:-}"
+  # ── pull_request_target: unlabeled ───────────────────────────────────────
+  unlabeled:
+    if: inputs.event_name == 'pull_request_target' && inputs.action == 'unlabeled'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
+      - env:
+          GH_TOKEN: ${{ secrets.project_token }}
+          PROJECT_ID: ${{ inputs.PROJECT_ID }}
+          PR_STATUS_FIELD_ID: ${{ inputs.PR_STATUS_FIELD_ID }}
+          OPT_UNASSIGNED: ${{ inputs.OPT_UNASSIGNED }}
+          OPT_IN_QUEUE: ${{ inputs.OPT_IN_QUEUE }}
+          OPT_BLOCKED: ${{ inputs.OPT_BLOCKED }}
+          OPT_MERGED: ${{ inputs.OPT_MERGED }}
+          OPT_CLOSED: ${{ inputs.OPT_CLOSED }}
+          PR_NODE_ID: ${{ inputs.pr_node_id }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          REPO: ${{ inputs.repo }}
+          ORG: ${{ inputs.org }}
+          LABEL_NAME: ${{ inputs.label_name }}
+        run: |
+          source /tmp/pr-helpers.sh
+          if [[ "${LABEL_NAME,,}" == reviewer:* ]]; then
+            build_member_maps
+            SIMPLE_NAME="${LABEL_NAME#*:}"
+            LOGIN="${LABEL_TO_LOGIN[${SIMPLE_NAME,,}]:-}"
             if [[ -n "$LOGIN" ]]; then
               gh api repos/"$REPO"/pulls/"$PR_NUMBER"/requested_reviewers \
                 -X DELETE -f "reviewers[]=$LOGIN"
             else
-              echo "No org member maps to label '$LABEL_NAME' — skipping"
+              echo "No org member maps to label '$LABEL_NAME' — skipping reviewer remove"
             fi
           fi
+          set_pr_status "$PR_NODE_ID" "$PR_NUMBER" "$REPO"
 
-          # ── reviewer added to PR → add reviewer: label ─────────────────────
-          ALL_LABELS=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels --jq '[.[].name]')
-          if [[ "$ACTION" == "review_requested" ]]; then
-            REVIEWER_LOGINS=$(echo "$PR_DATA" | jq -r '.requested_reviewers[].login')
-            while IFS= read -r login; do
-              [[ -z "$login" ]] && continue
-              LABEL="${LOGIN_TO_LABEL[$login]:-}"
-              if [[ -z "$LABEL" ]]; then
-                echo "Login '$login' not in org member map — skipping"
-                continue
-              fi
-              HAS=$(echo "$ALL_LABELS" | jq --arg l "$LABEL" 'any(.[]; . == $l)')
-              if [[ "$HAS" != "true" ]]; then
-                gh api repos/"$REPO"/labels -f name="$LABEL" -f color="0075ca" >/dev/null 2>&1 || true
-                gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=$LABEL"
-              fi
-            done <<< "$REVIEWER_LOGINS"
-          fi
+  # ── pull_request_review: submitted (changes_requested) ───────────────────
+  review-submitted:
+    if: inputs.event_name == 'pull_request_review' && inputs.action == 'submitted' && (inputs.review_state == 'changes_requested' || inputs.review_state == 'CHANGES_REQUESTED')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
+      - env:
+          GH_TOKEN: ${{ secrets.project_token }}
+          PROJECT_ID: ${{ inputs.PROJECT_ID }}
+          PR_STATUS_FIELD_ID: ${{ inputs.PR_STATUS_FIELD_ID }}
+          OPT_UNASSIGNED: ${{ inputs.OPT_UNASSIGNED }}
+          OPT_IN_QUEUE: ${{ inputs.OPT_IN_QUEUE }}
+          OPT_BLOCKED: ${{ inputs.OPT_BLOCKED }}
+          OPT_MERGED: ${{ inputs.OPT_MERGED }}
+          OPT_CLOSED: ${{ inputs.OPT_CLOSED }}
+          PR_NODE_ID: ${{ inputs.pr_node_id }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          REPO: ${{ inputs.repo }}
+        run: |
+          source /tmp/pr-helpers.sh
+          gh api repos/"$REPO"/labels -f name=".needs-changes" -f color="e11d48" >/dev/null 2>&1 || true
+          gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=.needs-changes"
+          set_pr_status "$PR_NODE_ID" "$PR_NUMBER" "$REPO"
 
-          # ── reviewer removed from PR → remove reviewer: label ──────────────
-          if [[ "$ACTION" == "review_request_removed" ]]; then
-            REVIEWER_LOGINS=$(echo "$PR_DATA" | jq -r '.requested_reviewers[].login')
-            CURRENT_REVIEWER_LABELS=$(echo "$ALL_LABELS" | jq -r '.[] | select(startswith("reviewer:"))')
-            declare -A REMAINING_REVIEWERS
-            while IFS= read -r login; do
-              [[ -z "$login" ]] && continue
-              RLABEL="${LOGIN_TO_LABEL[$login]:-}"
-              [[ -n "$RLABEL" ]] && REMAINING_REVIEWERS["$RLABEL"]=1
-            done <<< "$REVIEWER_LOGINS"
-            while IFS= read -r label; do
-              [[ -z "$label" ]] && continue
-              if [[ -z "${REMAINING_REVIEWERS[$label]+x}" ]]; then
-                ENCODED_LABEL=$(printf '%s' "$label" | sed 's/:/%3A/g')
-                gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/"$ENCODED_LABEL" -X DELETE || true
-              fi
-            done <<< "$CURRENT_REVIEWER_LABELS"
-          fi
-
-          # ── Assign base: label on new PRs ────────────────────────────────────
-          if [[ "$ACTION" == "opened" ]]; then
-            BASE_REF=$(echo "$PR_DATA" | jq -r '.base_ref')
-            BASE_LABEL="base:$BASE_REF"
-            gh api repos/"$REPO"/labels -f name="$BASE_LABEL" -f color="0e8a16" >/dev/null 2>&1 || true
-            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=$BASE_LABEL"
-          fi
-
-          # ── Sync .needs-changes label ───────────────────────────────────────────────────────────────────────
-          if [[ "$REVIEW_STATE" == "CHANGES_REQUESTED" ]]; then
-            gh api repos/"$REPO"/labels -f name=".needs-changes" -f color="e11d48" >/dev/null 2>&1 || true
-            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=.needs-changes"
-            NEEDS_CHANGES="true"
-          elif [[ "$REVIEW_STATE" == "APPROVED" ]]; then
+  # ── pull_request_review: dismissed ───────────────────────────────────────
+  review-dismissed:
+    if: inputs.event_name == 'pull_request_review' && inputs.action == 'dismissed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
+      - env:
+          GH_TOKEN: ${{ secrets.project_token }}
+          PROJECT_ID: ${{ inputs.PROJECT_ID }}
+          PR_STATUS_FIELD_ID: ${{ inputs.PR_STATUS_FIELD_ID }}
+          OPT_UNASSIGNED: ${{ inputs.OPT_UNASSIGNED }}
+          OPT_IN_QUEUE: ${{ inputs.OPT_IN_QUEUE }}
+          OPT_BLOCKED: ${{ inputs.OPT_BLOCKED }}
+          OPT_MERGED: ${{ inputs.OPT_MERGED }}
+          OPT_CLOSED: ${{ inputs.OPT_CLOSED }}
+          PR_NODE_ID: ${{ inputs.pr_node_id }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          REPO: ${{ inputs.repo }}
+        run: |
+          source /tmp/pr-helpers.sh
+          PENDING=$(gh api repos/"$REPO"/pulls/"$PR_NUMBER"/reviews \
+            --jq '[.[] | select(.state == "CHANGES_REQUESTED")] | length')
+          if [[ "$PENDING" -eq 0 ]]; then
             gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/.needs-changes -X DELETE || true
-            NEEDS_CHANGES="false"
-          else
-            # Either label blocks the PR — a manual removal of both is respected.
-            NEEDS_CHANGES=$(echo "$ALL_LABELS" | jq 'any(.[]; . == ".needs-changes" or . == "question")')
           fi
+          set_pr_status "$PR_NODE_ID" "$PR_NUMBER" "$REPO"
 
-          # ── Set PR Status ──────────────────────────────────────────────────
-          if [[ "$DRAFT" == "true" ]]; then
-            set_status "$OPT_UNASSIGNED"
-          elif [[ "$MERGED" == "true" ]]; then
-            set_status "$OPT_MERGED"
-          elif [[ "$CLOSED" == "true" ]]; then
-            set_status "$OPT_CLOSED"
-          elif [[ "$NEEDS_CHANGES" == "true" ]]; then
-            set_status "$OPT_BLOCKED"
-          elif [[ "$REVIEWER_COUNT" -gt 0 ]]; then
-            set_status "$OPT_IN_QUEUE"
-          else
-            set_status "$OPT_UNASSIGNED"
-          fi
+  # ── pull_request_target: closed ──────────────────────────────────────────
+  pr-closed:
+    if: inputs.event_name == 'pull_request_target' && inputs.action == 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
+      - env:
+          GH_TOKEN: ${{ secrets.project_token }}
+          PROJECT_ID: ${{ inputs.PROJECT_ID }}
+          PR_STATUS_FIELD_ID: ${{ inputs.PR_STATUS_FIELD_ID }}
+          OPT_UNASSIGNED: ${{ inputs.OPT_UNASSIGNED }}
+          OPT_IN_QUEUE: ${{ inputs.OPT_IN_QUEUE }}
+          OPT_BLOCKED: ${{ inputs.OPT_BLOCKED }}
+          OPT_MERGED: ${{ inputs.OPT_MERGED }}
+          OPT_CLOSED: ${{ inputs.OPT_CLOSED }}
+          PR_NODE_ID: ${{ inputs.pr_node_id }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          REPO: ${{ inputs.repo }}
+        run: |
+          source /tmp/pr-helpers.sh
+          set_pr_status "$PR_NODE_ID" "$PR_NUMBER" "$REPO"
 
-  sync-on-drag:
+  # ── repository_dispatch: tile dragged on board ───────────────────────────
+  pr-dragged:
     if: inputs.event_name == 'repository_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - name: Re-evaluate PR status after project board drag
-        continue-on-error: true
-        env:
+      - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
+      - env:
           GH_TOKEN: ${{ secrets.project_token }}
           PROJECT_ID: ${{ inputs.PROJECT_ID }}
           PR_STATUS_FIELD_ID: ${{ inputs.PR_STATUS_FIELD_ID }}
@@ -365,8 +353,11 @@ jobs:
           OPT_MERGED: ${{ inputs.OPT_MERGED }}
           OPT_CLOSED: ${{ inputs.OPT_CLOSED }}
           CONTENT_NODE_ID: ${{ inputs.content_node_id }}
-          ITEM_ID: ${{ inputs.item_node_id }}
+          OLD_STATUS: ${{ inputs.old_status }}
+          NEW_STATUS: ${{ inputs.new_status }}
         run: |
+          source /tmp/pr-helpers.sh
+
           PR_INFO=$(gh api graphql -f query='
             query($id: ID!) {
               node(id: $id) {
@@ -378,177 +369,72 @@ jobs:
             }' -f id="$CONTENT_NODE_ID" \
             --jq '.data.node | "\(.number) \(.repository.nameWithOwner)"')
           PR_NUMBER=$(echo "$PR_INFO" | cut -d' ' -f1)
-          REPO=$(echo "$PR_INFO" | cut -d' ' -f2)
+          REPO=$(echo "$PR_INFO" | cut -d' ' -f2-)
 
-          PR_DATA=$(gh api repos/"$REPO"/pulls/"$PR_NUMBER" --jq '{
-            requested_reviewers: .requested_reviewers,
-            merged: .merged,
-            state: .state,
-            draft: .draft
-          }')
-          REVIEWER_COUNT=$(echo "$PR_DATA" | jq '.requested_reviewers | length')
-          MERGED=$(echo "$PR_DATA" | jq -r '.merged')
-          CLOSED=$(echo "$PR_DATA" | jq -r '.state == "closed"')
-          DRAFT=$(echo "$PR_DATA" | jq -r '.draft')
-
-          # Either label blocks the PR — a manual removal of both is respected.
-          NEEDS_CHANGES=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels \
-            --jq 'any(.[].name; . == ".needs-changes" or . == "question")')
-
-          if [[ "$DRAFT" == "true" ]]; then
-            CORRECT_OPT="$OPT_UNASSIGNED"
-          elif [[ "$MERGED" == "true" ]]; then
-            CORRECT_OPT="$OPT_MERGED"
-          elif [[ "$CLOSED" == "true" ]]; then
-            CORRECT_OPT="$OPT_CLOSED"
-          elif [[ "$NEEDS_CHANGES" == "true" ]]; then
-            CORRECT_OPT="$OPT_BLOCKED"
-          elif [[ "$REVIEWER_COUNT" -gt 0 ]]; then
-            CORRECT_OPT="$OPT_IN_QUEUE"
-          else
-            CORRECT_OPT="$OPT_UNASSIGNED"
+          if [[ "$OLD_STATUS" == "Blocked" ]]; then
+            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/.needs-changes -X DELETE || true
+            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/.question -X DELETE || true
           fi
 
-          gh api graphql -f query='
-            mutation($proj: ID!, $item: ID!, $field: ID!, $opt: String!) {
-              updateProjectV2ItemFieldValue(input: {
-                projectId: $proj, itemId: $item,
-                fieldId: $field, value: { singleSelectOptionId: $opt }
-              }) { projectV2Item { id } }
-            }' \
-            -f proj="$PROJECT_ID" -f item="$ITEM_ID" \
-            -f field="$PR_STATUS_FIELD_ID" -f opt="$CORRECT_OPT"
+          if [[ "$NEW_STATUS" == "Blocked" ]]; then
+            gh api repos/"$REPO"/labels -f name=".needs-changes" -f color="e11d48" >/dev/null 2>&1 || true
+            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=.needs-changes"
+          elif [[ "$NEW_STATUS" == "Unassigned" ]]; then
+            REVIEWER_LOGINS=$(gh api repos/"$REPO"/pulls/"$PR_NUMBER" \
+              --jq '.requested_reviewers[].login')
+            while IFS= read -r LOGIN; do
+              [[ -z "$LOGIN" ]] && continue
+              gh api repos/"$REPO"/pulls/"$PR_NUMBER"/requested_reviewers \
+                -X DELETE -f "reviewers[]=$LOGIN"
+            done <<< "$REVIEWER_LOGINS"
+            REVIEWER_LABELS=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels \
+              --jq '[.[].name] | .[] | select(startswith("reviewer:"))')
+            while IFS= read -r RLABEL; do
+              [[ -z "$RLABEL" ]] && continue
+              ENCODED=$(printf '%s' "$RLABEL" | sed 's/:/%3A/g')
+              gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/"$ENCODED" -X DELETE || true
+            done <<< "$REVIEWER_LABELS"
+          fi
 
-  resync-all:
+          set_pr_status "$CONTENT_NODE_ID" "$PR_NUMBER" "$REPO"
+
+  # ── schedule / workflow_dispatch ─────────────────────────────────────────
+  scheduled:
     if: inputs.event_name == 'schedule' || inputs.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - name: Re-sync all open PR statuses and reconcile reviewer labels
-        env:
+      - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
+      - env:
           GH_TOKEN: ${{ secrets.project_token }}
           PROJECT_ID: ${{ inputs.PROJECT_ID }}
           PR_STATUS_FIELD_ID: ${{ inputs.PR_STATUS_FIELD_ID }}
+          ITERATION_FIELD_ID: ${{ inputs.ITERATION_FIELD_ID }}
           OPT_UNASSIGNED: ${{ inputs.OPT_UNASSIGNED }}
           OPT_IN_QUEUE: ${{ inputs.OPT_IN_QUEUE }}
           OPT_BLOCKED: ${{ inputs.OPT_BLOCKED }}
           OPT_MERGED: ${{ inputs.OPT_MERGED }}
           OPT_CLOSED: ${{ inputs.OPT_CLOSED }}
-          ORG: ${{ inputs.org }}
           REPO: ${{ inputs.repo }}
+          ORG: ${{ inputs.org }}
         run: |
-          set_status() {
-            local item_id="$1" opt="$2"
-            gh api graphql -f query='
-              mutation($proj: ID!, $item: ID!, $field: ID!, $opt: String!) {
-                updateProjectV2ItemFieldValue(input: {
-                  projectId: $proj, itemId: $item,
-                  fieldId: $field, value: { singleSelectOptionId: $opt }
-                }) { projectV2Item { id } }
-              }' \
-              -f proj="$PROJECT_ID" -f item="$item_id" \
-              -f field="$PR_STATUS_FIELD_ID" -f opt="$opt"
-          }
+          source /tmp/pr-helpers.sh
+          build_member_maps
 
-          # Derive the canonical "reviewer:<Name>" label for an org member.
-          # Args: LOGIN  NAME (name may be empty string)
-          compute_label() {
-            local LOGIN="$1" NAME="$2" LABEL_NAME FOUND_LOWER RESULT CHAR i
-            if [[ -n "$NAME" ]]; then
-              LABEL_NAME="${NAME%% *}"
-            else
-              LABEL_NAME="${LOGIN%%-*}"
-              if [[ "$LABEL_NAME" =~ [a-z] ]]; then
-                FOUND_LOWER=false; RESULT=""
-                for (( i=0; i<${#LABEL_NAME}; i++ )); do
-                  CHAR="${LABEL_NAME:$i:1}"
-                  if [[ "$FOUND_LOWER" == false ]]; then
-                    [[ "$CHAR" =~ [a-z] ]] && FOUND_LOWER=true
-                    RESULT+="$CHAR"
-                  else
-                    [[ "$CHAR" =~ [A-Z] ]] && break
-                    RESULT+="$CHAR"
-                  fi
-                done
-                LABEL_NAME="$RESULT"
-              fi
-            fi
-            echo "reviewer:${LABEL_NAME^}"
-          }
-
-          # Pre-fetch all org members once and build bidirectional maps
-          ORG_MEMBERS_DATA=$(gh api graphql \
-            -F org="$ORG" \
-            -f query='query($org: String!) {
-              organization(login: $org) {
-                membersWithRole(first: 100) {
-                  nodes { login name }
-                } } }' \
-            --jq '.data.organization.membersWithRole.nodes[] | "\(.login)\t\(.name // "")"')
-
-          declare -A LOGIN_TO_LABEL LABEL_TO_LOGIN
-          while IFS=$'\t' read -r M_LOGIN M_NAME; do
-            [[ -z "$M_LOGIN" ]] && continue
-            M_LABEL=$(compute_label "$M_LOGIN" "$M_NAME")
-            LOGIN_TO_LABEL["$M_LOGIN"]="$M_LABEL"
-            LABEL_TO_LOGIN["${M_LABEL,,}"]="$M_LOGIN"
-          done <<< "$ORG_MEMBERS_DATA"
-
-          get_item_id() {
-            local pr_node_id="$1"
-            gh api graphql -f query='
-              mutation($proj: ID!, $pr: ID!) {
-                addProjectV2ItemById(input: { projectId: $proj, contentId: $pr }) {
-                  item { id }
-                }
-              }' \
-              -f proj="$PROJECT_ID" -f pr="$pr_node_id" \
-              --jq '.data.addProjectV2ItemById.item.id'
-          }
-
-          # ── Open PRs: fix status + reconcile reviewer labels ───────────────
           PR_NUMBERS=$(gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate --jq '.[].number')
 
           for PR_NUMBER in $PR_NUMBERS; do
             PR_DATA=$(gh api repos/"$REPO"/pulls/"$PR_NUMBER" --jq '{
               node_id: .node_id,
-              requested_reviewers: .requested_reviewers,
-              merged: .merged,
-              state: .state,
-              draft: .draft,
+              reviewers: ([.requested_reviewers[].login] | join(" ")),
               base_ref: .base.ref
             }')
             PR_NODE_ID=$(echo "$PR_DATA" | jq -r '.node_id')
-            REVIEWER_COUNT=$(echo "$PR_DATA" | jq '.requested_reviewers | length')
-            MERGED=$(echo "$PR_DATA" | jq -r '.merged')
-            CLOSED=$(echo "$PR_DATA" | jq -r '.state == "closed"')
-            DRAFT=$(echo "$PR_DATA" | jq -r '.draft')
-
-            ITEM_ID=$(get_item_id "$PR_NODE_ID")
-            [[ -z "$ITEM_ID" ]] && continue
-
-            # ── Status ────────────────────────────────────────────────────
-            # Either label blocks the PR — a manual removal of both is respected.
-            NEEDS_CHANGES=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels \
-              --jq 'any(.[].name; . == ".needs-changes" or . == "question")')
-
-            if [[ "$DRAFT" == "true" ]]; then
-              set_status "$ITEM_ID" "$OPT_UNASSIGNED"
-            elif [[ "$MERGED" == "true" ]]; then
-              set_status "$ITEM_ID" "$OPT_MERGED"
-            elif [[ "$CLOSED" == "true" ]]; then
-              set_status "$ITEM_ID" "$OPT_CLOSED"
-            elif [[ "$NEEDS_CHANGES" == "true" ]]; then
-              set_status "$ITEM_ID" "$OPT_BLOCKED"
-            elif [[ "$REVIEWER_COUNT" -gt 0 ]]; then
-              set_status "$ITEM_ID" "$OPT_IN_QUEUE"
-            else
-              set_status "$ITEM_ID" "$OPT_UNASSIGNED"
-            fi
+            REVIEWERS=$(echo "$PR_DATA" | jq -r '.reviewers')
+            BASE_REF=$(echo "$PR_DATA" | jq -r '.base_ref')
 
             ALL_LABELS=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels --jq '[.[].name]')
 
-            # ── base: label ──────────────────────────────────────────────────
-            BASE_REF=$(echo "$PR_DATA" | jq -r '.base_ref')
+            # ── Ensure base: label ───────────────────────────────────────
             BASE_LABEL="base:$BASE_REF"
             HAS_BASE=$(echo "$ALL_LABELS" | jq --arg l "$BASE_LABEL" 'any(.[]; . == $l)')
             if [[ "$HAS_BASE" != "true" ]]; then
@@ -556,30 +442,28 @@ jobs:
               gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=$BASE_LABEL"
             fi
 
-            # ── Reviewer ↔ label reconciliation ─────────────────────────────
-            REVIEWERS=$(echo "$PR_DATA" | jq -r '[.requested_reviewers[].login] | join(" ")')
-            RAW_REVIEWER_LABELS=$(echo "$ALL_LABELS" | jq -r '.[] | select(startswith("reviewer:"))')
-
-            # Add labels for reviewers that have none
-            for REVIEWER in $REVIEWERS; do
-              [[ -z "$REVIEWER" ]] && continue
-              EXPECTED_LABEL="${LOGIN_TO_LABEL[$REVIEWER]:-}"
-              if [[ -z "$EXPECTED_LABEL" ]]; then
-                echo "PR #$PR_NUMBER: '$REVIEWER' not in org map — skipping"
+            # ── Add labels for reviewers that don't have one ─────────────
+            for LOGIN in $REVIEWERS; do
+              SIMPLE_NAME="${LOGIN_TO_LABEL[$LOGIN]:-}"
+              if [[ -z "$SIMPLE_NAME" ]]; then
+                echo "PR #$PR_NUMBER: '$LOGIN' not in org map — skipping"
                 continue
               fi
-              HAS=$(echo "$ALL_LABELS" | jq --arg l "$EXPECTED_LABEL" 'any(.[]; . == $l)')
+              LABEL="reviewer:$SIMPLE_NAME"
+              HAS=$(echo "$ALL_LABELS" | jq --arg l "$LABEL" 'any(.[]; . == $l)')
               if [[ "$HAS" != "true" ]]; then
-                echo "PR #$PR_NUMBER: adding missing label '$EXPECTED_LABEL' for reviewer '$REVIEWER'"
-                gh api repos/"$REPO"/labels -f name="$EXPECTED_LABEL" -f color="0075ca" >/dev/null 2>&1 || true
-                gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=$EXPECTED_LABEL"
+                echo "PR #$PR_NUMBER: adding missing label '$LABEL' for reviewer '$LOGIN'"
+                gh api repos/"$REPO"/labels -f name="$LABEL" -f color="0075ca" >/dev/null 2>&1 || true
+                gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=$LABEL"
               fi
             done
 
-            # Add reviewers for labels that have none
+            # ── Add reviewers for reviewer: labels that don't have one ───
+            REVIEWER_LABELS=$(echo "$ALL_LABELS" | jq -r '.[] | select(startswith("reviewer:"))')
             while IFS= read -r RLABEL; do
               [[ -z "$RLABEL" ]] && continue
-              EXPECTED_LOGIN="${LABEL_TO_LOGIN[${RLABEL,,}]:-}"
+              SIMPLE_NAME="${RLABEL#*:}"
+              EXPECTED_LOGIN="${LABEL_TO_LOGIN[${SIMPLE_NAME,,}]:-}"
               if [[ -z "$EXPECTED_LOGIN" ]]; then
                 echo "PR #$PR_NUMBER: label '$RLABEL' has no matching org member — skipping"
                 continue
@@ -588,30 +472,9 @@ jobs:
                 echo "PR #$PR_NUMBER: adding missing reviewer '$EXPECTED_LOGIN' for label '$RLABEL'"
                 gh pr edit "$PR_NUMBER" --repo "$REPO" --add-reviewer "$EXPECTED_LOGIN" || true
               fi
-            done <<< "$RAW_REVIEWER_LABELS"
-
-          done
-
-          # ── Recently closed/merged PRs: fix status ─────────────────────────
-          YESTERDAY=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)
-          CLOSED_NUMBERS=$(gh api "repos/$REPO/pulls?state=closed&per_page=50&sort=updated&direction=desc" \
-            | jq -r --arg since "$YESTERDAY" \
-            '[.[] | select(.updated_at >= $since)] | .[].number')
-
-          for PR_NUMBER in $CLOSED_NUMBERS; do
-            PR_DATA=$(gh api repos/"$REPO"/pulls/"$PR_NUMBER" --jq '{
-              node_id: .node_id,
-              merged: .merged
-            }')
-            PR_NODE_ID=$(echo "$PR_DATA" | jq -r '.node_id')
-            MERGED=$(echo "$PR_DATA" | jq -r '.merged')
+            done <<< "$REVIEWER_LABELS"
 
             ITEM_ID=$(get_item_id "$PR_NODE_ID")
-            [[ -z "$ITEM_ID" ]] && continue
-
-            if [[ "$MERGED" == "true" ]]; then
-              set_status "$ITEM_ID" "$OPT_MERGED"
-            else
-              set_status "$ITEM_ID" "$OPT_CLOSED"
-            fi
+            assign_iteration "$ITEM_ID"
+            set_pr_status "$PR_NODE_ID" "$PR_NUMBER" "$REPO"
           done
