@@ -13,7 +13,7 @@ jobs:
   handle-drag:
     # Only act when the PR Status field changed on a PullRequest item
     if: >
-      github.event.changes.field_value.field_name == 'Status' &&
+      github.event.changes.field_value.field_node_id == 'PVTSSF_lADODmqj9M4BQ_g8zg-9EB0' &&
       github.event.projects_v2_item.content_type == 'PullRequest'
     runs-on: ubuntu-latest
     steps:
@@ -37,8 +37,6 @@ jobs:
           OPT_MERGED: "82a10391"
           OPT_CLOSED: "a90c2a6f"
           CONTENT_NODE_ID: ${{ github.event.projects_v2_item.content_node_id }}
-          OLD_STATUS: ${{ github.event.changes.field_value.from }}
-          NEW_STATUS: ${{ github.event.changes.field_value.to }}
         run: |
           source /tmp/pr-helpers.sh
 
@@ -55,7 +53,47 @@ jobs:
           PR_NUMBER=$(echo "$PR_INFO" | cut -d' ' -f1)
           REPO=$(echo "$PR_INFO" | cut -d' ' -f2-)
 
-          if [[ "$OLD_STATUS" == "Blocked" ]]; then
+          # Query the current status option ID, then resolve its name from the field definition
+          CURRENT_OPT=$(gh api graphql -f query='
+            query($item: ID!) {
+              node(id: $item) {
+                ... on ProjectV2Item {
+                  fieldValues(first: 20) {
+                    nodes {
+                      ... on ProjectV2ItemFieldSingleSelectValue {
+                        optionId
+                        field { ... on ProjectV2SingleSelectField { id } }
+                      }
+                    }
+                  }
+                }
+              }
+            }' \
+            -f item="${{ github.event.projects_v2_item.node_id }}" \
+            --jq --arg fid "$PR_STATUS_FIELD_ID" '
+              .data.node.fieldValues.nodes[] |
+              select(.field.id == $fid) |
+              .optionId')
+
+          NEW_STATUS=$(gh api graphql -f query='
+            query($field: ID!) {
+              node(id: $field) {
+                ... on ProjectV2SingleSelectField {
+                  options { id name }
+                }
+              }
+            }' \
+            -f field="$PR_STATUS_FIELD_ID" \
+            --jq --arg id "$CURRENT_OPT" '
+              .data.node.options[] | select(.id == $id) | .name')
+
+          ALL_LABELS=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels --jq '[.[].name]')
+          HAS_BLOCKING=$(echo "$ALL_LABELS" | gh api -q '
+            ' --input - 2>/dev/null || \
+            echo "$ALL_LABELS" | grep -qE '^\[.*"\.needs-changes"|"\.question"|"\.hold"|"\.needs-decision"' && echo true || echo false)
+
+          # If dragged away from Blocked (blocking labels present but new status isn't Blocked)
+          if [[ "$NEW_STATUS" != "Blocked" ]]; then
             gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/%2Eneeds-changes -X DELETE || true
             gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/%2Equestion -X DELETE || true
             gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/%2Ehold -X DELETE || true
