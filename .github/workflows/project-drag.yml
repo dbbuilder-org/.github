@@ -1,8 +1,8 @@
 name: Project Board Drag Handler
 
 on:
-  projects_v2_item:
-    types: [edited]
+  repository_dispatch:
+    types: [project_drag]
 
 permissions:
   contents: read
@@ -11,10 +11,9 @@ permissions:
 
 jobs:
   handle-drag:
-    # Only act when the PR Status field changed on a PullRequest item
+    # Only act when the PR Status field changed
     if: >
-      github.event.changes.field_value.field_node_id == 'PVTSSF_lADODmqj9M4BQ_g8zg-9EB0' &&
-      github.event.projects_v2_item.content_type == 'PullRequest'
+      github.event.client_payload.field_node_id == 'PVTSSF_lADODmqj9M4BQ_g8zg-9EB0'
     runs-on: ubuntu-latest
     steps:
       - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
@@ -36,7 +35,9 @@ jobs:
           OPT_BLOCKED: "fec0dae0"
           OPT_MERGED: "82a10391"
           OPT_CLOSED: "a90c2a6f"
-          CONTENT_NODE_ID: ${{ github.event.projects_v2_item.content_node_id }}
+          CONTENT_NODE_ID: ${{ github.event.client_payload.content_node_id }}
+          FROM_STATUS: ${{ github.event.client_payload.from_status }}
+          TO_STATUS: ${{ github.event.client_payload.to_status }}
         run: |
           source /tmp/pr-helpers.sh
 
@@ -53,57 +54,17 @@ jobs:
           PR_NUMBER=$(echo "$PR_INFO" | cut -d' ' -f1)
           REPO=$(echo "$PR_INFO" | cut -d' ' -f2-)
 
-          # Query the current status option ID, then resolve its name from the field definition
-          CURRENT_OPT=$(gh api graphql -f query='
-            query($item: ID!) {
-              node(id: $item) {
-                ... on ProjectV2Item {
-                  fieldValues(first: 20) {
-                    nodes {
-                      ... on ProjectV2ItemFieldSingleSelectValue {
-                        optionId
-                        field { ... on ProjectV2SingleSelectField { id } }
-                      }
-                    }
-                  }
-                }
-              }
-            }' \
-            -f item="${{ github.event.projects_v2_item.node_id }}" \
-            --jq --arg fid "$PR_STATUS_FIELD_ID" '
-              .data.node.fieldValues.nodes[] |
-              select(.field.id == $fid) |
-              .optionId')
-
-          NEW_STATUS=$(gh api graphql -f query='
-            query($field: ID!) {
-              node(id: $field) {
-                ... on ProjectV2SingleSelectField {
-                  options { id name }
-                }
-              }
-            }' \
-            -f field="$PR_STATUS_FIELD_ID" \
-            --jq --arg id "$CURRENT_OPT" '
-              .data.node.options[] | select(.id == $id) | .name')
-
-          ALL_LABELS=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels --jq '[.[].name]')
-          HAS_BLOCKING=$(echo "$ALL_LABELS" | gh api -q '
-            ' --input - 2>/dev/null || \
-            echo "$ALL_LABELS" | grep -qE '^\[.*"\.needs-changes"|"\.question"|"\.hold"|"\.needs-decision"' && echo true || echo false)
-
-          # If dragged away from Blocked (blocking labels present but new status isn't Blocked)
-          if [[ "$NEW_STATUS" != "Blocked" ]]; then
+          if [[ "$FROM_STATUS" == "Blocked" && "$TO_STATUS" != "Blocked" ]]; then
             gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/%2Eneeds-changes -X DELETE || true
             gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/%2Equestion -X DELETE || true
             gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/%2Ehold -X DELETE || true
             gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/%2Eneeds-decision -X DELETE || true
           fi
 
-          if [[ "$NEW_STATUS" == "Blocked" ]]; then
+          if [[ "$TO_STATUS" == "Blocked" ]]; then
             gh api repos/"$REPO"/labels -f name=".needs-changes" -f color="e11d48" >/dev/null 2>&1 || true
             gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=.needs-changes"
-          elif [[ "$NEW_STATUS" == "Unassigned" ]]; then
+          elif [[ "$TO_STATUS" == "Unassigned" ]]; then
             REVIEWER_LOGINS=$(gh api repos/"$REPO"/pulls/"$PR_NUMBER" \
               --jq '.requested_reviewers[].login')
             while IFS= read -r LOGIN; do
