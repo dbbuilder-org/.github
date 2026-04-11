@@ -426,8 +426,8 @@ jobs:
           fi
 
           if [[ "$NEW_STATUS" == "Blocked" ]]; then
-            gh api repos/"$REPO"/labels -f name=".needs-changes" -f color="e11d48" >/dev/null 2>&1 || true
-            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=.needs-changes"
+            gh api repos/"$REPO"/labels -f name=".hold" -f color="e11d48" >/dev/null 2>&1 || true
+            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=.hold"
           elif [[ "$NEW_STATUS" == "Unassigned" ]]; then
             REVIEWER_LOGINS=$(gh api repos/"$REPO"/pulls/"$PR_NUMBER" \
               --jq '.requested_reviewers[].login')
