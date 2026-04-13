@@ -532,3 +532,78 @@ jobs:
             assign_iteration "$ITEM_ID"
             set_pr_status "$PR_NODE_ID" "$PR_NUMBER" "$REPO"
           done
+
+          # ── Backfill: assign iteration to any project item still missing one ─
+          # Covers PRs from all repos in the project, not just $REPO.
+          [[ -z "$ITERATION_FIELD_ID" ]] && exit 0
+
+          TARGET_ITER=$(gh api graphql -f query='
+            query($proj: ID!) {
+              node(id: $proj) {
+                ... on ProjectV2 {
+                  fields(first: 20) {
+                    nodes {
+                      ... on ProjectV2IterationField {
+                        configuration {
+                          iterations { id startDate duration }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }' \
+            -f proj="$PROJECT_ID" \
+            --jq --argjson today "$(date -u +%s)" '
+              [.data.node.fields.nodes[] |
+               select(.configuration != null) |
+               .configuration.iterations[] |
+               {id, start: (.startDate | strptime("%Y-%m-%d") | mktime),
+                end:  ((.startDate | strptime("%Y-%m-%d") | mktime) + (.duration * 86400))}] as $iters |
+              (
+                ($iters | map(select(.start <= $today and .end > $today)) | .[0])
+                // ($iters | map(select(.start > $today)) | sort_by(.start) | .[0])
+              ) | .id // empty' \
+            | head -1)
+
+          [[ -z "$TARGET_ITER" ]] && exit 0
+
+          UNASSIGNED_ITEMS=$(gh api graphql -f query='
+            query($proj: ID!) {
+              node(id: $proj) {
+                ... on ProjectV2 {
+                  items(first: 100) {
+                    nodes {
+                      id
+                      fieldValues(first: 20) {
+                        nodes {
+                          ... on ProjectV2ItemFieldIterationValue { iterationId }
+                        }
+                      }
+                      content {
+                        ... on PullRequest { state }
+                      }
+                    }
+                  }
+                }
+              }
+            }' \
+            -f proj="$PROJECT_ID" \
+            --jq '[.data.node.items.nodes[] |
+              select(.content.state? == "OPEN") |
+              select([.fieldValues.nodes[] | select(.iterationId != null)] | length == 0) |
+              .id] | .[]')
+
+          while IFS= read -r ITEM_ID; do
+            [[ -z "$ITEM_ID" ]] && continue
+            echo "Backfill: assigning iteration to item $ITEM_ID"
+            gh api graphql -f query='
+              mutation($proj: ID!, $item: ID!, $field: ID!, $iter: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $proj, itemId: $item,
+                  fieldId: $field, value: { iterationId: $iter }
+                }) { projectV2Item { id } }
+              }' \
+              -f proj="$PROJECT_ID" -f item="$ITEM_ID" \
+              -f field="$ITERATION_FIELD_ID" -f iter="$TARGET_ITER"
+          done <<< "$UNASSIGNED_ITEMS"

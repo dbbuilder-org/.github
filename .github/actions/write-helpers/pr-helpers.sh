@@ -116,13 +116,15 @@ assign_iteration() {
     }' \
     -f proj="$PROJECT_ID" \
     --jq --argjson today "$(date -u +%s)" '
-      .data.node.fields.nodes[] |
-      select(.configuration != null) |
-      .configuration.iterations[] |
-      select(
-        (.startDate | strptime("%Y-%m-%d") | mktime) <= $today and
-        ((.startDate | strptime("%Y-%m-%d") | mktime) + (.duration * 86400)) > $today
-      ) | .id' \
+      [.data.node.fields.nodes[] |
+       select(.configuration != null) |
+       .configuration.iterations[] |
+       {id, start: (.startDate | strptime("%Y-%m-%d") | mktime),
+        end:  ((.startDate | strptime("%Y-%m-%d") | mktime) + (.duration * 86400))}] as $iters |
+      (
+        ($iters | map(select(.start <= $today and .end > $today)) | .[0])
+        // ($iters | map(select(.start > $today)) | sort_by(.start) | .[0])
+      ) | .id // empty' \
     | head -1)
   [[ -z "$current_iter" ]] && return 0
 
