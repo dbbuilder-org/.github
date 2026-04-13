@@ -538,6 +538,7 @@ jobs:
           if [[ -z "$ITERATION_FIELD_ID" ]]; then
             echo "Backfill: ITERATION_FIELD_ID not set — skipping."
           else
+            BACKFILL_TODAY=$(date -u +%s)
             TARGET_ITER=$(gh api graphql -f query='
               query($proj: ID!) {
                 node(id: $proj) {
@@ -555,16 +556,16 @@ jobs:
                 }
               }' \
               -f proj="$PROJECT_ID" \
-              --jq --argjson today "$(date -u +%s)" '
+              --jq "
                 [.data.node.fields.nodes[] |
                  select(.configuration != null) |
                  .configuration.iterations[] |
-                 {id, start: (.startDate | strptime("%Y-%m-%d") | mktime),
-                  end:  ((.startDate | strptime("%Y-%m-%d") | mktime) + (.duration * 86400))}] as $iters |
+                 {id, start: (.startDate | strptime(\"%Y-%m-%d\") | mktime),
+                  end:  ((.startDate | strptime(\"%Y-%m-%d\") | mktime) + (.duration * 86400))}] as \$iters |
                 (
-                  ($iters | map(select(.start <= $today and .end > $today)) | .[0])
-                  // ($iters | map(select(.start > $today)) | sort_by(.start) | .[0])
-                ) | .id // empty' \
+                  (\$iters | map(select(.start <= $BACKFILL_TODAY and .end > $BACKFILL_TODAY)) | .[0])
+                  // (\$iters | map(select(.start > $BACKFILL_TODAY)) | sort_by(.start) | .[0])
+                ) | .id // empty" \
               | head -1)
 
             if [[ -z "$TARGET_ITER" ]]; then
@@ -576,9 +577,11 @@ jobs:
               CURSOR=""
               BACKFILL_COUNT=0
               while true; do
+                CURSOR_ARG=()
+                [[ -n "$CURSOR" ]] && CURSOR_ARG=(-f after="$CURSOR")
                 PAGE=$(gh api graphql \
                   -f proj="$PROJECT_ID" \
-                  -f after="$CURSOR" \
+                  "${CURSOR_ARG[@]}" \
                   -f query='
                     query($proj: ID!, $after: String) {
                       node(id: $proj) {

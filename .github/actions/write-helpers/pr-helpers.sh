@@ -96,7 +96,8 @@ assign_iteration() {
     | head -1)
   [[ -n "$existing" ]] && return 0
 
-  local current_iter
+  local current_iter today
+  today=$(date -u +%s)
   current_iter=$(gh api graphql -f query='
     query($proj: ID!) {
       node(id: $proj) {
@@ -115,16 +116,16 @@ assign_iteration() {
       }
     }' \
     -f proj="$PROJECT_ID" \
-    --jq --argjson today "$(date -u +%s)" '
+    --jq "
       [.data.node.fields.nodes[] |
        select(.configuration != null) |
        .configuration.iterations[] |
-       {id, start: (.startDate | strptime("%Y-%m-%d") | mktime),
-        end:  ((.startDate | strptime("%Y-%m-%d") | mktime) + (.duration * 86400))}] as $iters |
+       {id, start: (.startDate | strptime(\"%Y-%m-%d\") | mktime),
+        end:  ((.startDate | strptime(\"%Y-%m-%d\") | mktime) + (.duration * 86400))}] as \$iters |
       (
-        ($iters | map(select(.start <= $today and .end > $today)) | .[0])
-        // ($iters | map(select(.start > $today)) | sort_by(.start) | .[0])
-      ) | .id // empty' \
+        (\$iters | map(select(.start <= $today and .end > $today)) | .[0])
+        // (\$iters | map(select(.start > $today)) | sort_by(.start) | .[0])
+      ) | .id // empty" \
     | head -1)
   [[ -z "$current_iter" ]] && return 0
 
