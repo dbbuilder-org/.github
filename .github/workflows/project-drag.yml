@@ -66,8 +66,12 @@ jobs:
           fi
 
           if [[ "$TO_STATUS" == "Blocked" ]]; then
-            gh api repos/"$REPO"/labels -f name=".needs-changes" -f color="e11d48" >/dev/null 2>&1 || true
-            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=.needs-changes"
+            HAS_BLOCKING=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels \
+              --jq 'any(.[].name; . == ".needs-changes" or . == ".question")')
+            if [[ "$HAS_BLOCKING" != "true" ]]; then
+              gh api repos/"$REPO"/labels -f name=".needs-changes" -f color="e11d48" >/dev/null 2>&1 || true
+              gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=.needs-changes"
+            fi
           elif [[ "$TO_STATUS" == "On Hold" ]]; then
             gh api repos/"$REPO"/labels -f name=".hold" -f color="e11d48" >/dev/null 2>&1 || true
             gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=.hold"
