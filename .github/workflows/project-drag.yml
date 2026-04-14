@@ -33,6 +33,7 @@ jobs:
           OPT_UNASSIGNED: "d7a91005"
           OPT_IN_QUEUE: "0e9ca88f"
           OPT_BLOCKED: "fec0dae0"
+          OPT_ON_HOLD: "ee2cd977"
           OPT_MERGED: "82a10391"
           OPT_CLOSED: "a90c2a6f"
           CONTENT_NODE_ID: ${{ github.event.client_payload.content_node_id }}
@@ -57,11 +58,17 @@ jobs:
           if [[ "$FROM_STATUS" == "Blocked" && "$TO_STATUS" != "Blocked" ]]; then
             gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/%2Eneeds-changes -X DELETE || true
             gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/%2Equestion -X DELETE || true
-            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/%2Ehold -X DELETE || true
             gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/%2Eneeds-decision -X DELETE || true
           fi
 
+          if [[ "$FROM_STATUS" == "On Hold" && "$TO_STATUS" != "On Hold" ]]; then
+            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/%2Ehold -X DELETE || true
+          fi
+
           if [[ "$TO_STATUS" == "Blocked" ]]; then
+            gh api repos/"$REPO"/labels -f name=".needs-changes" -f color="e11d48" >/dev/null 2>&1 || true
+            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=.needs-changes"
+          elif [[ "$TO_STATUS" == "On Hold" ]]; then
             gh api repos/"$REPO"/labels -f name=".hold" -f color="e11d48" >/dev/null 2>&1 || true
             gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=.hold"
           elif [[ "$TO_STATUS" == "Unassigned" ]]; then

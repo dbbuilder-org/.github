@@ -143,10 +143,10 @@ assign_iteration() {
 # Determine the correct PR status and update the project board.
 # Args: PR_NODE_ID  PR_NUMBER  REPO
 # Requires env vars: GH_TOKEN, PROJECT_ID, PR_STATUS_FIELD_ID,
-#                    OPT_MERGED, OPT_CLOSED, OPT_BLOCKED, OPT_IN_QUEUE, OPT_UNASSIGNED
+#                    OPT_MERGED, OPT_CLOSED, OPT_BLOCKED, OPT_ON_HOLD, OPT_IN_QUEUE, OPT_UNASSIGNED
 set_pr_status() {
   local pr_node_id="$1" pr_number="$2" repo="$3"
-  local item_id pr_data merged closed reviewer_count needs_changes opt
+  local item_id pr_data merged closed reviewer_count labels on_hold needs_changes opt
 
   item_id=$(get_item_id "$pr_node_id")
   if [[ -z "$item_id" ]]; then
@@ -159,11 +159,13 @@ set_pr_status() {
   merged=$(echo "$pr_data" | jq -r '.merged')
   closed=$(echo "$pr_data" | jq -r '.state == "closed"')
   reviewer_count=$(echo "$pr_data" | jq -r '.reviewer_count')
-  needs_changes=$(gh api repos/"$repo"/issues/"$pr_number"/labels \
-    --jq 'any(.[].name; . == ".needs-changes" or . == ".question" or . == ".hold" or . == ".needs-decision")')
+  labels=$(gh api repos/"$repo"/issues/"$pr_number"/labels --jq '[.[].name]')
+  on_hold=$(echo "$labels"       | jq 'any(.[]; . == ".hold")')
+  needs_changes=$(echo "$labels" | jq 'any(.[]; . == ".needs-changes" or . == ".question")')
 
   if   [[ "$merged"         == "true" ]]; then opt="$OPT_MERGED"
   elif [[ "$closed"         == "true" ]]; then opt="$OPT_CLOSED"
+  elif [[ "$on_hold"        == "true" ]]; then opt="$OPT_ON_HOLD"
   elif [[ "$needs_changes"  == "true" ]]; then opt="$OPT_BLOCKED"
   elif [[ "$reviewer_count" -gt 0    ]]; then opt="$OPT_IN_QUEUE"
   else                                          opt="$OPT_UNASSIGNED"

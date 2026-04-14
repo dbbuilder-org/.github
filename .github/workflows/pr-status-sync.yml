@@ -23,6 +23,9 @@ on:
       OPT_BLOCKED:
         required: true
         type: string
+      OPT_ON_HOLD:
+        required: true
+        type: string
       OPT_MERGED:
         required: true
         type: string
@@ -106,6 +109,7 @@ jobs:
           OPT_UNASSIGNED: ${{ inputs.OPT_UNASSIGNED }}
           OPT_IN_QUEUE: ${{ inputs.OPT_IN_QUEUE }}
           OPT_BLOCKED: ${{ inputs.OPT_BLOCKED }}
+          OPT_ON_HOLD: ${{ inputs.OPT_ON_HOLD }}
           OPT_MERGED: ${{ inputs.OPT_MERGED }}
           OPT_CLOSED: ${{ inputs.OPT_CLOSED }}
           PR_NODE_ID: ${{ inputs.pr_node_id }}
@@ -139,6 +143,7 @@ jobs:
           OPT_UNASSIGNED: ${{ inputs.OPT_UNASSIGNED }}
           OPT_IN_QUEUE: ${{ inputs.OPT_IN_QUEUE }}
           OPT_BLOCKED: ${{ inputs.OPT_BLOCKED }}
+          OPT_ON_HOLD: ${{ inputs.OPT_ON_HOLD }}
           OPT_MERGED: ${{ inputs.OPT_MERGED }}
           OPT_CLOSED: ${{ inputs.OPT_CLOSED }}
           PR_NODE_ID: ${{ inputs.pr_node_id }}
@@ -184,6 +189,7 @@ jobs:
           OPT_UNASSIGNED: ${{ inputs.OPT_UNASSIGNED }}
           OPT_IN_QUEUE: ${{ inputs.OPT_IN_QUEUE }}
           OPT_BLOCKED: ${{ inputs.OPT_BLOCKED }}
+          OPT_ON_HOLD: ${{ inputs.OPT_ON_HOLD }}
           OPT_MERGED: ${{ inputs.OPT_MERGED }}
           OPT_CLOSED: ${{ inputs.OPT_CLOSED }}
           PR_NODE_ID: ${{ inputs.pr_node_id }}
@@ -229,6 +235,7 @@ jobs:
           OPT_UNASSIGNED: ${{ inputs.OPT_UNASSIGNED }}
           OPT_IN_QUEUE: ${{ inputs.OPT_IN_QUEUE }}
           OPT_BLOCKED: ${{ inputs.OPT_BLOCKED }}
+          OPT_ON_HOLD: ${{ inputs.OPT_ON_HOLD }}
           OPT_MERGED: ${{ inputs.OPT_MERGED }}
           OPT_CLOSED: ${{ inputs.OPT_CLOSED }}
           PR_NODE_ID: ${{ inputs.pr_node_id }}
@@ -269,6 +276,7 @@ jobs:
           OPT_UNASSIGNED: ${{ inputs.OPT_UNASSIGNED }}
           OPT_IN_QUEUE: ${{ inputs.OPT_IN_QUEUE }}
           OPT_BLOCKED: ${{ inputs.OPT_BLOCKED }}
+          OPT_ON_HOLD: ${{ inputs.OPT_ON_HOLD }}
           OPT_MERGED: ${{ inputs.OPT_MERGED }}
           OPT_CLOSED: ${{ inputs.OPT_CLOSED }}
           PR_NODE_ID: ${{ inputs.pr_node_id }}
@@ -309,6 +317,7 @@ jobs:
           OPT_UNASSIGNED: ${{ inputs.OPT_UNASSIGNED }}
           OPT_IN_QUEUE: ${{ inputs.OPT_IN_QUEUE }}
           OPT_BLOCKED: ${{ inputs.OPT_BLOCKED }}
+          OPT_ON_HOLD: ${{ inputs.OPT_ON_HOLD }}
           OPT_MERGED: ${{ inputs.OPT_MERGED }}
           OPT_CLOSED: ${{ inputs.OPT_CLOSED }}
           PR_NODE_ID: ${{ inputs.pr_node_id }}
@@ -338,6 +347,7 @@ jobs:
           OPT_UNASSIGNED: ${{ inputs.OPT_UNASSIGNED }}
           OPT_IN_QUEUE: ${{ inputs.OPT_IN_QUEUE }}
           OPT_BLOCKED: ${{ inputs.OPT_BLOCKED }}
+          OPT_ON_HOLD: ${{ inputs.OPT_ON_HOLD }}
           OPT_MERGED: ${{ inputs.OPT_MERGED }}
           OPT_CLOSED: ${{ inputs.OPT_CLOSED }}
           PR_NODE_ID: ${{ inputs.pr_node_id }}
@@ -370,6 +380,7 @@ jobs:
           OPT_UNASSIGNED: ${{ inputs.OPT_UNASSIGNED }}
           OPT_IN_QUEUE: ${{ inputs.OPT_IN_QUEUE }}
           OPT_BLOCKED: ${{ inputs.OPT_BLOCKED }}
+          OPT_ON_HOLD: ${{ inputs.OPT_ON_HOLD }}
           OPT_MERGED: ${{ inputs.OPT_MERGED }}
           OPT_CLOSED: ${{ inputs.OPT_CLOSED }}
           PR_NODE_ID: ${{ inputs.pr_node_id }}
@@ -397,6 +408,7 @@ jobs:
           OPT_UNASSIGNED: ${{ inputs.OPT_UNASSIGNED }}
           OPT_IN_QUEUE: ${{ inputs.OPT_IN_QUEUE }}
           OPT_BLOCKED: ${{ inputs.OPT_BLOCKED }}
+          OPT_ON_HOLD: ${{ inputs.OPT_ON_HOLD }}
           OPT_MERGED: ${{ inputs.OPT_MERGED }}
           OPT_CLOSED: ${{ inputs.OPT_CLOSED }}
           CONTENT_NODE_ID: ${{ inputs.content_node_id }}
@@ -418,14 +430,20 @@ jobs:
           PR_NUMBER=$(echo "$PR_INFO" | cut -d' ' -f1)
           REPO=$(echo "$PR_INFO" | cut -d' ' -f2-)
 
-          if [[ "$OLD_STATUS" == "Blocked" ]]; then
+          if [[ "$OLD_STATUS" == "Blocked" && "$NEW_STATUS" != "Blocked" ]]; then
             gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/%2Eneeds-changes -X DELETE || true
             gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/%2Equestion -X DELETE || true
-            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/%2Ehold -X DELETE || true
             gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/%2Eneeds-decision -X DELETE || true
           fi
 
+          if [[ "$OLD_STATUS" == "On Hold" && "$NEW_STATUS" != "On Hold" ]]; then
+            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/%2Ehold -X DELETE || true
+          fi
+
           if [[ "$NEW_STATUS" == "Blocked" ]]; then
+            gh api repos/"$REPO"/labels -f name=".needs-changes" -f color="e11d48" >/dev/null 2>&1 || true
+            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=.needs-changes"
+          elif [[ "$NEW_STATUS" == "On Hold" ]]; then
             gh api repos/"$REPO"/labels -f name=".hold" -f color="e11d48" >/dev/null 2>&1 || true
             gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=.hold"
           elif [[ "$NEW_STATUS" == "Unassigned" ]]; then
@@ -466,6 +484,7 @@ jobs:
           OPT_UNASSIGNED: ${{ inputs.OPT_UNASSIGNED }}
           OPT_IN_QUEUE: ${{ inputs.OPT_IN_QUEUE }}
           OPT_BLOCKED: ${{ inputs.OPT_BLOCKED }}
+          OPT_ON_HOLD: ${{ inputs.OPT_ON_HOLD }}
           OPT_MERGED: ${{ inputs.OPT_MERGED }}
           OPT_CLOSED: ${{ inputs.OPT_CLOSED }}
           REPO: ${{ inputs.repo }}
