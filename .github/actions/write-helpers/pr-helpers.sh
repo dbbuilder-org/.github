@@ -165,7 +165,7 @@ set_pr_status() {
 
   if   [[ "$merged"         == "true" ]]; then opt="$OPT_MERGED"
   elif [[ "$closed"         == "true" ]]; then opt="$OPT_CLOSED"
-  elif [[ "$on_hold"        == "true" ]]; then opt="$OPT_ON_HOLD"
+  elif [[ "$on_hold" == "true" && -n "$OPT_ON_HOLD" ]]; then opt="$OPT_ON_HOLD"
   elif [[ "$needs_changes"  == "true" ]]; then opt="$OPT_BLOCKED"
   elif [[ "$reviewer_count" -gt 0    ]]; then opt="$OPT_IN_QUEUE"
   else                                          opt="$OPT_UNASSIGNED"

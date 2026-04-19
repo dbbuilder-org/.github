@@ -24,8 +24,9 @@ on:
         required: true
         type: string
       OPT_ON_HOLD:
-        required: true
+        required: false
         type: string
+        default: ''
       OPT_MERGED:
         required: true
         type: string
@@ -554,6 +555,48 @@ jobs:
             ITEM_ID=$(get_item_id "$PR_NODE_ID")
             assign_iteration "$ITEM_ID"
             set_pr_status "$PR_NODE_ID" "$PR_NUMBER" "$REPO"
+          done
+
+          # ── Sync closed/merged PRs that may have a stale project status ──────
+          echo "Syncing closed/merged PRs in project..."
+          STALE_CURSOR=""
+          while true; do
+            STALE_CURSOR_ARG=()
+            [[ -n "$STALE_CURSOR" ]] && STALE_CURSOR_ARG=(-f after="$STALE_CURSOR")
+            STALE_PAGE=$(gh api graphql \
+              -f proj="$PROJECT_ID" \
+              "${STALE_CURSOR_ARG[@]}" \
+              -f query='
+                query($proj: ID!, $after: String) {
+                  node(id: $proj) {
+                    ... on ProjectV2 {
+                      items(first: 100, after: $after) {
+                        pageInfo { hasNextPage endCursor }
+                        nodes {
+                          content {
+                            ... on PullRequest {
+                              id
+                              state
+                              number
+                              repository { nameWithOwner }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }')
+            while IFS=$'\t' read -r STALE_NODE_ID STALE_NUMBER STALE_REPO; do
+              [[ -z "$STALE_NODE_ID" ]] && continue
+              echo "Syncing closed/merged PR #$STALE_NUMBER in $STALE_REPO"
+              set_pr_status "$STALE_NODE_ID" "$STALE_NUMBER" "$STALE_REPO"
+            done < <(echo "$STALE_PAGE" | jq -r '
+              .data.node.items.nodes[] |
+              select(.content.state? == "CLOSED" or .content.state? == "MERGED") |
+              "\(.content.id)\t\(.content.number)\t\(.content.repository.nameWithOwner)"')
+            STALE_HAS_NEXT=$(echo "$STALE_PAGE" | jq -r '.data.node.items.pageInfo.hasNextPage')
+            [[ "$STALE_HAS_NEXT" != "true" ]] && break
+            STALE_CURSOR=$(echo "$STALE_PAGE" | jq -r '.data.node.items.pageInfo.endCursor')
           done
 
           # ── Backfill: assign iteration to any project item still missing one ─
