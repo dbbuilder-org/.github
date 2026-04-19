@@ -557,8 +557,8 @@ jobs:
             set_pr_status "$PR_NODE_ID" "$PR_NUMBER" "$REPO"
           done
 
-          # ── Sync closed/merged PRs that may have a stale project status ──────
-          echo "Syncing closed/merged PRs in project..."
+          # ── Sync closed/merged PRs that have a stale (non-terminal) status ───
+          echo "Checking for closed/merged PRs with stale project status..."
           STALE_CURSOR=""
           while true; do
             STALE_CURSOR_ARG=()
@@ -573,6 +573,14 @@ jobs:
                       items(first: 100, after: $after) {
                         pageInfo { hasNextPage endCursor }
                         nodes {
+                          fieldValues(first: 20) {
+                            nodes {
+                              ... on ProjectV2ItemFieldSingleSelectValue {
+                                field { ... on ProjectV2SingleSelectField { id } }
+                                optionId
+                              }
+                            }
+                          }
                           content {
                             ... on PullRequest {
                               id
@@ -588,11 +596,20 @@ jobs:
                 }')
             while IFS=$'\t' read -r STALE_NODE_ID STALE_NUMBER STALE_REPO; do
               [[ -z "$STALE_NODE_ID" ]] && continue
-              echo "Syncing closed/merged PR #$STALE_NUMBER in $STALE_REPO"
+              echo "Syncing stuck PR #$STALE_NUMBER in $STALE_REPO"
               set_pr_status "$STALE_NODE_ID" "$STALE_NUMBER" "$STALE_REPO"
-            done < <(echo "$STALE_PAGE" | jq -r '
+            done < <(echo "$STALE_PAGE" | jq -r \
+              --arg field "$PR_STATUS_FIELD_ID" \
+              --arg merged "$OPT_MERGED" \
+              --arg closed "$OPT_CLOSED" '
               .data.node.items.nodes[] |
-              select(.content.state? == "CLOSED" or .content.state? == "MERGED") |
+              select(
+                (.content.state? == "CLOSED" or .content.state? == "MERGED") and
+                ([.fieldValues.nodes[] |
+                  select(.field?.id? == $field) |
+                  .optionId] |
+                  any(. == $merged or . == $closed) | not)
+              ) |
               "\(.content.id)\t\(.content.number)\t\(.content.repository.nameWithOwner)"')
             STALE_HAS_NEXT=$(echo "$STALE_PAGE" | jq -r '.data.node.items.pageInfo.hasNextPage')
             [[ "$STALE_HAS_NEXT" != "true" ]] && break
