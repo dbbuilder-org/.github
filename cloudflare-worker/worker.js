@@ -83,6 +83,7 @@ export default {
             field_node_id:   fieldChange.field_node_id,
             from_status:     fieldChange.from?.name ?? '',
             to_status:       fieldChange.to?.name ?? '',
+            sender:          payload.sender?.login ?? '',
           },
         }),
       }

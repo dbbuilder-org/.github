@@ -39,6 +39,7 @@ jobs:
           CONTENT_NODE_ID: ${{ github.event.client_payload.content_node_id }}
           FROM_STATUS: ${{ github.event.client_payload.from_status }}
           TO_STATUS: ${{ github.event.client_payload.to_status }}
+          SENDER: ${{ github.event.client_payload.sender }}
         run: |
           source /tmp/pr-helpers.sh
 
@@ -68,7 +69,7 @@ jobs:
           if [[ "$TO_STATUS" == "Blocked" ]]; then
             HAS_BLOCKING=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels \
               --jq 'any(.[].name; . == ".needs-changes" or . == ".question")')
-            if [[ "$HAS_BLOCKING" != "true" ]]; then
+            if [[ "$HAS_BLOCKING" != "true" && "$SENDER" != *"[bot]"* ]]; then
               gh api repos/"$REPO"/labels -f name=".needs-changes" -f color="e11d48" >/dev/null 2>&1 || true
               gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=.needs-changes"
             fi
