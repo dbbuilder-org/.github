@@ -487,7 +487,7 @@ jobs:
           elif [[ "$NEW_STATUS" == "On Hold" ]]; then
             gh api repos/"$REPO"/labels -f name=".hold" -f color="e11d48" >/dev/null 2>&1 || true
             gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=.hold"
-          elif [[ "$NEW_STATUS" == "Unassigned" ]]; then
+          elif [[ "$NEW_STATUS" == "Unassigned" && "$SENDER" != *"[bot]"* ]]; then
             REVIEWER_LOGINS=$(gh api repos/"$REPO"/pulls/"$PR_NUMBER" \
               --jq '.requested_reviewers[].login')
             while IFS= read -r LOGIN; do
