@@ -72,11 +72,11 @@ get_item_id() {
 }
 
 # Assign the current sprint iteration to a project item, if not already set.
+# Discovers ITERATION_FIELD_ID from the project when not set externally.
 # Args: ITEM_ID
-# Requires env vars: PROJECT_ID, ITERATION_FIELD_ID (skipped if blank)
+# Requires env var: PROJECT_ID
 assign_iteration() {
   local item_id="$1"
-  [[ -z "$ITERATION_FIELD_ID" ]] && return 0
 
   local existing
   existing=$(gh api graphql -f query='
@@ -96,9 +96,9 @@ assign_iteration() {
     | head -1)
   [[ -n "$existing" ]] && return 0
 
-  local current_iter today
+  local today raw field_id current_iter
   today=$(date -u +%s)
-  current_iter=$(gh api graphql -f query='
+  raw=$(gh api graphql -f query='
     query($proj: ID!) {
       node(id: $proj) {
         ... on ProjectV2 {
@@ -117,17 +117,24 @@ assign_iteration() {
     }' \
     -f proj="$PROJECT_ID" \
     --jq "
-      [.data.node.fields.nodes[] |
-       select(.configuration != null) |
-       .configuration.iterations[] |
-       {id, start: (.startDate | strptime(\"%Y-%m-%d\") | mktime),
-        end:  ((.startDate | strptime(\"%Y-%m-%d\") | mktime) + (.duration * 86400))}] as \$iters |
-      (
-        (\$iters | map(select(.start <= $today and .end > $today)) | .[0])
-        // (\$iters | map(select(.start > $today)) | sort_by(.start) | .[0])
-      ) | .id // empty" \
-    | head -1)
-  [[ -z "$current_iter" ]] && return 0
+      ([.data.node.fields.nodes[] | select(.configuration != null)] | .[0]) as \$f |
+      if \$f != null then {
+        field_id: \$f.id,
+        iter_id: (
+          [\$f.configuration.iterations[] |
+           {id, start: (.startDate | strptime(\"%Y-%m-%d\") | mktime),
+            end:  ((.startDate | strptime(\"%Y-%m-%d\") | mktime) + (.duration * 86400))}] as \$iters |
+          (
+            (\$iters | map(select(.start <= $today and .end > $today)) | .[0])
+            // (\$iters | map(select(.start > $today)) | sort_by(.start) | .[0])
+          ) | .id // empty
+        )
+      } else {field_id: null, iter_id: null} end")
+  field_id=$(echo "$raw" | jq -r '.field_id // empty')
+  current_iter=$(echo "$raw" | jq -r '.iter_id // empty')
+  [[ -z "$field_id" || -z "$current_iter" ]] && return 0
+
+  [[ -z "$ITERATION_FIELD_ID" ]] && ITERATION_FIELD_ID="$field_id"
 
   gh api graphql -f query='
     mutation($proj: ID!, $item: ID!, $field: ID!, $iter: String!) {
@@ -137,7 +144,7 @@ assign_iteration() {
       }) { projectV2Item { id } }
     }' \
     -f proj="$PROJECT_ID" -f item="$item_id" \
-    -f field="$ITERATION_FIELD_ID" -f iter="$current_iter"
+    -f field="$field_id" -f iter="$current_iter"
 }
 
 # Determine the correct PR status and update the project board.

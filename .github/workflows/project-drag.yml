@@ -29,7 +29,6 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PROJECT_ID: "PVT_kwDODmqj9M4BQ_g8"
           PR_STATUS_FIELD_ID: "PVTSSF_lADODmqj9M4BQ_g8zg-9EB0"
-          ITERATION_FIELD_ID: "PVTIF_lADODmqj9M4BQ_g8zg-89P4"
           OPT_UNASSIGNED: "d7a91005"
           OPT_IN_QUEUE: "0e9ca88f"
           OPT_BLOCKED: "fec0dae0"

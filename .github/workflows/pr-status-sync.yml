@@ -498,103 +498,104 @@ jobs:
 
           # ── Backfill: assign iteration to any project item still missing one ─
           # Covers PRs from all repos in the project, not just $REPO.
-          if [[ -z "$ITERATION_FIELD_ID" ]]; then
-            echo "Backfill: ITERATION_FIELD_ID not set — skipping."
-          else
-            BACKFILL_TODAY=$(date -u +%s)
-            TARGET_ITER=$(gh api graphql -f query='
-              query($proj: ID!) {
-                node(id: $proj) {
-                  ... on ProjectV2 {
-                    fields(first: 20) {
-                      nodes {
-                        ... on ProjectV2IterationField {
-                          configuration {
-                            iterations { id startDate duration }
-                          }
+          BACKFILL_TODAY=$(date -u +%s)
+          BACKFILL_RAW=$(gh api graphql -f query='
+            query($proj: ID!) {
+              node(id: $proj) {
+                ... on ProjectV2 {
+                  fields(first: 20) {
+                    nodes {
+                      ... on ProjectV2IterationField {
+                        id
+                        configuration {
+                          iterations { id startDate duration }
                         }
                       }
                     }
                   }
                 }
-              }' \
-              -f proj="$PROJECT_ID" \
-              --jq "
-                [.data.node.fields.nodes[] |
-                 select(.configuration != null) |
-                 .configuration.iterations[] |
-                 {id, start: (.startDate | strptime(\"%Y-%m-%d\") | mktime),
-                  end:  ((.startDate | strptime(\"%Y-%m-%d\") | mktime) + (.duration * 86400))}] as \$iters |
-                (
-                  (\$iters | map(select(.start <= $BACKFILL_TODAY and .end > $BACKFILL_TODAY)) | .[0])
-                  // (\$iters | map(select(.start > $BACKFILL_TODAY)) | sort_by(.start) | .[0])
-                ) | .id // empty" \
-              | head -1)
+              }
+            }' \
+            -f proj="$PROJECT_ID" \
+            --jq "
+              ([.data.node.fields.nodes[] | select(.configuration != null)] | .[0]) as \$f |
+              if \$f != null then {
+                field_id: \$f.id,
+                iter_id: (
+                  [\$f.configuration.iterations[] |
+                   {id, start: (.startDate | strptime(\"%Y-%m-%d\") | mktime),
+                    end:  ((.startDate | strptime(\"%Y-%m-%d\") | mktime) + (.duration * 86400))}] as \$iters |
+                  (
+                    (\$iters | map(select(.start <= $BACKFILL_TODAY and .end > $BACKFILL_TODAY)) | .[0])
+                    // (\$iters | map(select(.start > $BACKFILL_TODAY)) | sort_by(.start) | .[0])
+                  ) | .id // empty
+                )
+              } else {field_id: null, iter_id: null} end")
+          [[ -z "$ITERATION_FIELD_ID" ]] && ITERATION_FIELD_ID=$(echo "$BACKFILL_RAW" | jq -r '.field_id // empty')
+          TARGET_ITER=$(echo "$BACKFILL_RAW" | jq -r '.iter_id // empty')
+          if [[ -z "$ITERATION_FIELD_ID" || -z "$TARGET_ITER" ]]; then
+            echo "Backfill: no iteration field or current iteration found — skipping."
+          else
+            echo "Backfill: target iteration $TARGET_ITER"
 
-            if [[ -z "$TARGET_ITER" ]]; then
-              echo "Backfill: no current or upcoming iteration found — skipping."
-            else
-              echo "Backfill: target iteration $TARGET_ITER"
-
-              # Paginate through all project items to find open PRs missing an iteration
-              CURSOR=""
-              BACKFILL_COUNT=0
-              while true; do
-                CURSOR_ARG=()
-                [[ -n "$CURSOR" ]] && CURSOR_ARG=(-f after="$CURSOR")
-                PAGE=$(gh api graphql \
-                  -f proj="$PROJECT_ID" \
-                  "${CURSOR_ARG[@]}" \
-                  -f query='
-                    query($proj: ID!, $after: String) {
-                      node(id: $proj) {
-                        ... on ProjectV2 {
-                          items(first: 100, after: $after) {
-                            pageInfo { hasNextPage endCursor }
-                            nodes {
-                              id
-                              fieldValues(first: 20) {
-                                nodes {
-                                  ... on ProjectV2ItemFieldIterationValue { iterationId }
-                                }
+            # Paginate through all project items to find open PRs missing an iteration
+            CURSOR=""
+            BACKFILL_COUNT=0
+            while true; do
+              CURSOR_ARG=()
+              [[ -n "$CURSOR" ]] && CURSOR_ARG=(-f after="$CURSOR")
+              PAGE=$(gh api graphql \
+                -f proj="$PROJECT_ID" \
+                "${CURSOR_ARG[@]}" \
+                -f query='
+                  query($proj: ID!, $after: String) {
+                    node(id: $proj) {
+                      ... on ProjectV2 {
+                        items(first: 100, after: $after) {
+                          pageInfo { hasNextPage endCursor }
+                          nodes {
+                            id
+                            fieldValues(first: 20) {
+                              nodes {
+                                ... on ProjectV2ItemFieldIterationValue { iterationId }
                               }
-                              content {
-                                ... on PullRequest { state }
-                              }
+                            }
+                            content {
+                              ... on PullRequest { state }
                             }
                           }
                         }
                       }
-                    }')
+                    }
+                  }')
 
-                UNASSIGNED=$(echo "$PAGE" | jq -r '
-                  [.data.node.items.nodes[] |
-                    select(.content.state? == "OPEN") |
-                    select([.fieldValues.nodes[] | select(.iterationId != null)] | length == 0) |
-                    .id] | .[]')
+              UNASSIGNED=$(echo "$PAGE" | jq -r '
+                [.data.node.items.nodes[] |
+                  select(.content.state? == "OPEN") |
+                  select([.fieldValues.nodes[] | select(.iterationId != null)] | length == 0) |
+                  .id] | .[]')
 
-                while IFS= read -r ITEM_ID; do
-                  [[ -z "$ITEM_ID" ]] && continue
-                  echo "Backfill: assigning iteration to item $ITEM_ID"
-                  gh api graphql -f query='
-                    mutation($proj: ID!, $item: ID!, $field: ID!, $iter: String!) {
-                      updateProjectV2ItemFieldValue(input: {
-                        projectId: $proj, itemId: $item,
-                        fieldId: $field, value: { iterationId: $iter }
-                      }) { projectV2Item { id } }
-                    }' \
-                    -f proj="$PROJECT_ID" -f item="$ITEM_ID" \
-                    -f field="$ITERATION_FIELD_ID" -f iter="$TARGET_ITER"
-                  (( BACKFILL_COUNT++ ))
-                done <<< "$UNASSIGNED"
+              while IFS= read -r ITEM_ID; do
+                [[ -z "$ITEM_ID" ]] && continue
+                echo "Backfill: assigning iteration to item $ITEM_ID"
+                gh api graphql -f query='
+                  mutation($proj: ID!, $item: ID!, $field: ID!, $iter: String!) {
+                    updateProjectV2ItemFieldValue(input: {
+                      projectId: $proj, itemId: $item,
+                      fieldId: $field, value: { iterationId: $iter }
+                    }) { projectV2Item { id } }
+                  }' \
+                  -f proj="$PROJECT_ID" -f item="$ITEM_ID" \
+                  -f field="$ITERATION_FIELD_ID" -f iter="$TARGET_ITER"
+                (( BACKFILL_COUNT++ ))
+              done <<< "$UNASSIGNED"
 
-                HAS_NEXT=$(echo "$PAGE" | jq -r '.data.node.items.pageInfo.hasNextPage')
-                [[ "$HAS_NEXT" != "true" ]] && break
-                CURSOR=$(echo "$PAGE" | jq -r '.data.node.items.pageInfo.endCursor')
-              done
+              HAS_NEXT=$(echo "$PAGE" | jq -r '.data.node.items.pageInfo.hasNextPage')
+              [[ "$HAS_NEXT" != "true" ]] && break
+              CURSOR=$(echo "$PAGE" | jq -r '.data.node.items.pageInfo.endCursor')
+            done
 
-              echo "Backfill: done — $BACKFILL_COUNT item(s) updated."
-            fi
+            echo "Backfill: done — $BACKFILL_COUNT item(s) updated."
           fi
 
   # ══ Human-only triggers ══════════════════════════════════════════════════
