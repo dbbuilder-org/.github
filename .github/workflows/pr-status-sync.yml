@@ -602,7 +602,7 @@ jobs:
 
   # ── pull_request_target: review_request_removed ──────────────────────────
   review-request-removed:
-    if: inputs.event_name == 'pull_request_target' && inputs.action == 'review_request_removed' && !contains(inputs.sender, '[bot]')
+    if: inputs.event_name == 'pull_request_target' && inputs.action == 'review_request_removed' && inputs.sender != '' && !contains(inputs.sender, '[bot]')
     runs-on: ubuntu-latest
     steps:
       - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
@@ -661,7 +661,7 @@ jobs:
   unlabeled:
     if: >
       inputs.event_name == 'pull_request_target' && inputs.action == 'unlabeled' &&
-      !contains(inputs.sender, '[bot]') &&
+      inputs.sender != '' && !contains(inputs.sender, '[bot]') &&
       (inputs.label_name == '.needs-changes' || inputs.label_name == '.needs-decision' ||
        inputs.label_name == '.question'      || inputs.label_name == '.hold'           ||
        startsWith(inputs.label_name, 'reviewer:'))
