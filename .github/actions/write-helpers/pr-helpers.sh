@@ -161,7 +161,7 @@ set_pr_status() {
   reviewer_count=$(echo "$pr_data" | jq -r '.reviewer_count')
   labels=$(gh api repos/"$repo"/issues/"$pr_number"/labels --jq '[.[].name]')
   on_hold=$(echo "$labels"        | jq 'any(.[]; . == ".hold")')
-  needs_changes=$(echo "$labels"  | jq 'any(.[]; . == ".needs-changes" or . == ".question")')
+  needs_changes=$(echo "$labels"  | jq 'any(.[]; . == ".needs-changes" or . == ".needs-decision" or . == ".question")')
   has_reviewer_label=$(echo "$labels" | jq 'any(.[]; startswith("reviewer:"))')
 
   if   [[ "$merged"         == "true" ]]; then opt="$OPT_MERGED"
