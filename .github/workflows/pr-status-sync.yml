@@ -130,6 +130,13 @@ jobs:
           source /tmp/pr-helpers.sh
           BASE_REF=$(gh api repos/"$REPO"/pulls/"$PR_NUMBER" --jq '.base.ref')
           BASE_LABEL="base:$BASE_REF"
+          STALE_BASE=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels \
+            --jq --arg l "$BASE_LABEL" '[.[].name] | .[] | select(startswith("base:") and . != $l)')
+          while IFS= read -r BLABEL; do
+            [[ -z "$BLABEL" ]] && continue
+            ENCODED=$(printf '%s' "$BLABEL" | sed 's/:/%3A/g')
+            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/"$ENCODED" -X DELETE || true
+          done <<< "$STALE_BASE"
           gh api repos/"$REPO"/labels -f name="$BASE_LABEL" -f color="0e8a16" >/dev/null 2>&1 || true
           gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=$BASE_LABEL"
           ITEM_ID=$(get_item_id "$PR_NODE_ID")
@@ -393,6 +400,12 @@ jobs:
 
             # ── Ensure base: label ───────────────────────────────────────
             BASE_LABEL="base:$BASE_REF"
+            STALE_BASE=$(echo "$ALL_LABELS" | jq -r --arg l "$BASE_LABEL" '.[] | select(startswith("base:") and . != $l)')
+            while IFS= read -r BLABEL; do
+              [[ -z "$BLABEL" ]] && continue
+              ENCODED=$(printf '%s' "$BLABEL" | sed 's/:/%3A/g')
+              gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/"$ENCODED" -X DELETE || true
+            done <<< "$STALE_BASE"
             HAS_BASE=$(echo "$ALL_LABELS" | jq --arg l "$BASE_LABEL" 'any(.[]; . == $l)')
             if [[ "$HAS_BASE" != "true" ]]; then
               gh api repos/"$REPO"/labels -f name="$BASE_LABEL" -f color="0e8a16" >/dev/null 2>&1 || true
