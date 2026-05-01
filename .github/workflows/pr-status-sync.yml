@@ -278,7 +278,7 @@ jobs:
 
   # ── repository_dispatch: tile dragged on board ───────────────────────────
   pr-dragged:
-    if: inputs.event_name == 'repository_dispatch' && inputs.sender != '' && !contains(inputs.sender, '[bot]')
+    if: inputs.event_name == 'repository_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: dbbuilder-org/.github/.github/actions/write-helpers@main

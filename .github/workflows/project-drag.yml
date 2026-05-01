@@ -12,10 +12,7 @@ permissions:
 jobs:
   handle-drag:
     # Only act on human-initiated drags of the PR Status field
-    if: >
-      github.event.client_payload.field_node_id == 'PVTSSF_lADODmqj9M4BQ_g8zg-9EB0' &&
-      github.event.client_payload.sender != '' &&
-      !contains(github.event.client_payload.sender, '[bot]')
+    if: github.event.client_payload.field_node_id == 'PVTSSF_lADODmqj9M4BQ_g8zg-9EB0'
     runs-on: ubuntu-latest
     steps:
       - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
