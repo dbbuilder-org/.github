@@ -107,7 +107,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
-      - uses: actions/create-github-app-token@v1
+      - uses: actions/create-github-app-token@v2
         id: app-token
         with:
           app-id: ${{ secrets.app_id }}
@@ -149,7 +149,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
-      - uses: actions/create-github-app-token@v1
+      - uses: actions/create-github-app-token@v2
         id: app-token
         with:
           app-id: ${{ secrets.app_id }}
@@ -177,7 +177,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
-      - uses: actions/create-github-app-token@v1
+      - uses: actions/create-github-app-token@v2
         id: app-token
         with:
           app-id: ${{ secrets.app_id }}
@@ -240,7 +240,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
-      - uses: actions/create-github-app-token@v1
+      - uses: actions/create-github-app-token@v2
         id: app-token
         with:
           app-id: ${{ secrets.app_id }}
@@ -282,7 +282,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
-      - uses: actions/create-github-app-token@v1
+      - uses: actions/create-github-app-token@v2
         id: app-token
         with:
           app-id: ${{ secrets.app_id }}
@@ -362,7 +362,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
-      - uses: actions/create-github-app-token@v1
+      - uses: actions/create-github-app-token@v2
         id: app-token
         with:
           app-id: ${{ secrets.app_id }}
@@ -619,7 +619,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
-      - uses: actions/create-github-app-token@v1
+      - uses: actions/create-github-app-token@v2
         id: app-token
         with:
           app-id: ${{ secrets.app_id }}
@@ -681,7 +681,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
-      - uses: actions/create-github-app-token@v1
+      - uses: actions/create-github-app-token@v2
         id: app-token
         with:
           app-id: ${{ secrets.app_id }}
@@ -722,7 +722,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
-      - uses: actions/create-github-app-token@v1
+      - uses: actions/create-github-app-token@v2
         id: app-token
         with:
           app-id: ${{ secrets.app_id }}
@@ -752,7 +752,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
-      - uses: actions/create-github-app-token@v1
+      - uses: actions/create-github-app-token@v2
         id: app-token
         with:
           app-id: ${{ secrets.app_id }}
