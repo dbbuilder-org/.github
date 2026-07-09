@@ -130,8 +130,8 @@ jobs:
           source /tmp/pr-helpers.sh
           BASE_REF=$(gh api repos/"$REPO"/pulls/"$PR_NUMBER" --jq '.base.ref')
           BASE_LABEL="base:$BASE_REF"
-          STALE_BASE=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels \
-            --jq --arg l "$BASE_LABEL" '[.[].name] | .[] | select(startswith("base:") and . != $l)')
+          STALE_BASE=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels --jq '[.[].name]' \
+            | jq -r --arg l "$BASE_LABEL" '.[] | select(startswith("base:") and . != $l)')
           while IFS= read -r BLABEL; do
             [[ -z "$BLABEL" ]] && continue
             ENCODED=$(printf '%s' "$BLABEL" | sed 's/:/%3A/g')
