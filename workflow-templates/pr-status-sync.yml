@@ -1,0 +1,54 @@
+name: Sync PR Status to Project
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+      - closed
+      - review_requested
+      - review_request_removed
+      - labeled
+      - unlabeled
+  pull_request_review:
+    types:
+      - submitted
+      - dismissed
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  sync:
+    uses: dbbuilder-org/.github/.github/workflows/pr-status-sync.yml@main
+    with:
+      # TODO: confirm these match this repo's GitHub Project board
+      # (Settings > ... or the board's field URLs). The values below are
+      # the "FireProof" project (project 6) — reused here on the assumption
+      # that this repo tracks PRs on that same board; update if not.
+      PROJECT_ID: "PVT_kwDODmqj9M4BZMhd"
+      PR_STATUS_FIELD_ID: "PVTSSF_lADODmqj9M4BZMhdzhUg79k"
+      OPT_UNASSIGNED: "faf07413"
+      OPT_IN_QUEUE: "92a631df"
+      OPT_BLOCKED: "408eadfa"
+      OPT_ON_HOLD: "70e50c11"
+      OPT_MERGED: "1292fa0e"
+      OPT_CLOSED: "c7fd025a"
+      event_name: ${{ github.event_name }}
+      repo: ${{ github.repository }}
+      org: ${{ github.repository_owner }}
+      pr_node_id: ${{ github.event.pull_request.node_id }}
+      pr_number: ${{ github.event.pull_request.number }}
+      action: ${{ github.event.action }}
+      label_name: ${{ github.event.label.name }}
+      review_state: ${{ github.event.review.state }}
+      reviewer_login: ${{ github.event.requested_reviewer.login }}
+      sender: ${{ github.event.sender.login }}
+    secrets:
+      app_id: ${{ secrets.WORKFLOW_APP_ID }}
+      app_private_key: ${{ secrets.WORKFLOW_APP_PRIVATE_KEY }}

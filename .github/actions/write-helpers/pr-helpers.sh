@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # Shared PR helper functions for pr-status-sync workflows.
 # Source this file; do not execute it directly.
+# Converted to LF line endings.
+#
+# shellcheck disable=SC2016
+# This file is single-quoted `-f query='...'` GraphQL literals throughout.
+# Those `$name` tokens are GraphQL variables (values passed separately via
+# -f/-F), not bash variables — double-quoting would make bash expand them
+# and corrupt the query text, so the single quotes are intentional.
 
 # Derive the canonical Simple Name for an org member.
 # Args: LOGIN  NAME (name may be empty string)
@@ -51,7 +58,9 @@ build_member_maps() {
   while IFS=$'\t' read -r m_login m_name; do
     [[ -z "$m_login" ]] && continue
     m_simple=$(compute_simple_name "$m_login" "$m_name")
+    # shellcheck disable=SC2034 # populated for callers that source this file, not used locally
     LOGIN_TO_LABEL["$m_login"]="$m_simple"
+    # shellcheck disable=SC2034 # populated for callers that source this file, not used locally
     LABEL_TO_LOGIN["${m_simple,,}"]="$m_login"
   done <<< "$org_data"
 }
@@ -188,4 +197,78 @@ set_pr_status() {
     }' \
     -f proj="$PROJECT_ID" -f item="$item_id" \
     -f field="$PR_STATUS_FIELD_ID" -f opt="$opt"
+}
+
+# Resolve a project item's PR number + repo from its GraphQL content node ID.
+# Args: CONTENT_NODE_ID
+# Prints: "NUMBER<TAB>REPO"
+resolve_pr_from_node_id() {
+  local content_node_id="$1"
+  gh api graphql -f query='
+    query($id: ID!) {
+      node(id: $id) {
+        ... on PullRequest {
+          number
+          repository { nameWithOwner }
+        }
+      }
+    }' -f id="$content_node_id" \
+    --jq '.data.node | "\(.number)\t\(.repository.nameWithOwner)"'
+}
+
+# Sync blocking/on-hold labels and reviewers when a project board drag changes
+# a PR's status field, then refresh the board status. Shared by every trigger
+# that reacts to a manual board drag (repository_dispatch: project_drag).
+# Args: CONTENT_NODE_ID  OLD_STATUS  NEW_STATUS  SENDER
+# Requires env vars: GH_TOKEN, PROJECT_ID, PR_STATUS_FIELD_ID,
+#                    OPT_MERGED, OPT_CLOSED, OPT_BLOCKED, OPT_ON_HOLD, OPT_IN_QUEUE, OPT_UNASSIGNED
+sync_labels_for_drag() {
+  local content_node_id="$1" old_status="$2" new_status="$3" sender="$4"
+  local pr_info pr_number repo
+
+  pr_info=$(resolve_pr_from_node_id "$content_node_id")
+  pr_number=$(echo "$pr_info" | cut -f1)
+  repo=$(echo "$pr_info" | cut -f2-)
+
+  if [[ "$old_status" == "Blocked" && "$new_status" != "Blocked" ]]; then
+    gh api repos/"$repo"/issues/"$pr_number"/labels/%2Eneeds-changes -X DELETE || true
+    gh api repos/"$repo"/issues/"$pr_number"/labels/%2Equestion -X DELETE || true
+    gh api repos/"$repo"/issues/"$pr_number"/labels/%2Eneeds-decision -X DELETE || true
+  fi
+
+  if [[ "$old_status" == "On Hold" && "$new_status" != "On Hold" ]]; then
+    gh api repos/"$repo"/issues/"$pr_number"/labels/%2Ehold -X DELETE || true
+  fi
+
+  if [[ "$new_status" == "Blocked" ]]; then
+    local has_blocking
+    has_blocking=$(gh api repos/"$repo"/issues/"$pr_number"/labels \
+      --jq 'any(.[].name; . == ".needs-changes" or . == ".needs-decision" or . == ".question")')
+    if [[ "$has_blocking" != "true" && "$sender" != *"[bot]"* ]]; then
+      gh api repos/"$repo"/labels -f name=".needs-decision" -f color="e11d48" >/dev/null 2>&1 || true
+      gh api repos/"$repo"/issues/"$pr_number"/labels -f "labels[]=.needs-decision"
+    fi
+  elif [[ "$new_status" == "On Hold" ]]; then
+    gh api repos/"$repo"/labels -f name=".hold" -f color="e11d48" >/dev/null 2>&1 || true
+    gh api repos/"$repo"/issues/"$pr_number"/labels -f "labels[]=.hold"
+  elif [[ "$new_status" == "Unassigned" && "$sender" != *"[bot]"* ]]; then
+    local reviewer_logins
+    reviewer_logins=$(gh api repos/"$repo"/pulls/"$pr_number" --jq '.requested_reviewers[].login')
+    while IFS= read -r login; do
+      [[ -z "$login" ]] && continue
+      gh api repos/"$repo"/pulls/"$pr_number"/requested_reviewers \
+        -X DELETE -f "reviewers[]=$login"
+    done <<< "$reviewer_logins"
+    local reviewer_labels
+    reviewer_labels=$(gh api repos/"$repo"/issues/"$pr_number"/labels \
+      --jq '[.[].name] | .[] | select(startswith("reviewer:"))')
+    while IFS= read -r rlabel; do
+      [[ -z "$rlabel" ]] && continue
+      local encoded
+      encoded=$(printf '%s' "$rlabel" | sed 's/:/%3A/g')
+      gh api repos/"$repo"/issues/"$pr_number"/labels/"$encoded" -X DELETE || true
+    done <<< "$reviewer_labels"
+  fi
+
+  set_pr_status "$content_node_id" "$pr_number" "$repo"
 }

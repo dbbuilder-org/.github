@@ -1,0 +1,23 @@
+name: PR bot init
+description: Loads shared PR helper functions into /tmp and mints a GitHub App installation token for the workflow bot
+
+inputs:
+  app-id:
+    required: true
+  app-private-key:
+    required: true
+
+outputs:
+  token:
+    description: GitHub App installation token
+    value: ${{ steps.app-token.outputs.token }}
+
+runs:
+  using: composite
+  steps:
+    - uses: dbbuilder-org/.github/.github/actions/write-helpers@main
+    - uses: actions/create-github-app-token@v2
+      id: app-token
+      with:
+        app-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.app-private-key }}

@@ -1,0 +1,7 @@
+{
+  "name": "PR Status Sync",
+  "description": "Keeps a PR's labels, reviewers, and GitHub Projects board status in sync as it moves through review (open, review requests, review outcomes, close/merge, plus a periodic reconcile).",
+  "iconName": "octicon_workflow",
+  "categories": ["Automation"],
+  "filePatterns": []
+}
