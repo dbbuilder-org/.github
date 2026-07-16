@@ -14,27 +14,6 @@ jobs:
   # pr-status-sync workflow, scoped to whichever project board the drag
   # happened on. To add a board, add another job below with its IDs — the
   # sync logic itself lives only in pr-status-sync.yml.
-  handle-drag-sprints:
-    if: github.event.client_payload.field_node_id == 'PVTSSF_lADODmqj9M4BQ_g8zg-9EB0'
-    uses: dbbuilder-org/.github/.github/workflows/pr-status-sync.yml@main
-    with:
-      PROJECT_ID: "PVT_kwDODmqj9M4BQ_g8"
-      PR_STATUS_FIELD_ID: "PVTSSF_lADODmqj9M4BQ_g8zg-9EB0"
-      OPT_UNASSIGNED: "d7a91005"
-      OPT_IN_QUEUE: "0e9ca88f"
-      OPT_BLOCKED: "fec0dae0"
-      OPT_ON_HOLD: "ee2cd977"
-      OPT_MERGED: "82a10391"
-      OPT_CLOSED: "a90c2a6f"
-      event_name: repository_dispatch
-      repo: ""
-      content_node_id: ${{ github.event.client_payload.content_node_id }}
-      old_status: ${{ github.event.client_payload.from_status }}
-      new_status: ${{ github.event.client_payload.to_status }}
-      sender: ${{ github.event.client_payload.sender }}
-    secrets:
-      app_id: ${{ secrets.WORKFLOW_APP_ID }}
-      app_private_key: ${{ secrets.WORKFLOW_APP_PRIVATE_KEY }}
 
   handle-drag-fireproof:
     if: github.event.client_payload.field_node_id == 'PVTSSF_lADODmqj9M4BZMhdzhUg79k'
