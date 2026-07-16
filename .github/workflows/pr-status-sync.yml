@@ -313,6 +313,7 @@ jobs:
           ORG: ${{ inputs.org }}
         run: |
           source /tmp/pr-helpers.sh
+          set -x
           build_member_maps
 
           PR_NUMBERS=$(gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate --jq '.[].number')
