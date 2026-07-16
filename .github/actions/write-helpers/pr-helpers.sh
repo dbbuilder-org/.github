@@ -216,6 +216,40 @@ resolve_pr_from_node_id() {
     --jq '.data.node | "\(.number)\t\(.repository.nameWithOwner)"'
 }
 
+# Ensure LABEL exists on REPO (creating it with COLOR if missing), then
+# attach it to PR_NUMBER's issue. Idempotent — safe even if already attached.
+# Args: REPO  PR_NUMBER  LABEL  COLOR
+ensure_label_and_add() {
+  local repo="$1" pr_number="$2" label="$3" color="$4"
+  gh api repos/"$repo"/labels -f name="$label" -f color="$color" >/dev/null 2>&1 || true
+  gh api repos/"$repo"/issues/"$pr_number"/labels -f "labels[]=$label"
+}
+
+# Ensure PR_NUMBER's "base:*" label matches BASE_REF — removes any other
+# base:* label first, then adds the correct one if missing.
+# ALL_LABELS (a JSON array of current label names) is optional; pass it when
+# the caller already has it to skip a redundant API call, otherwise it's
+# fetched fresh.
+# Args: REPO  PR_NUMBER  BASE_REF  [ALL_LABELS_JSON]
+sync_base_label() {
+  local repo="$1" pr_number="$2" base_ref="$3" all_labels="${4:-}"
+  local base_label="base:$base_ref"
+  [[ -z "$all_labels" ]] && all_labels=$(gh api repos/"$repo"/issues/"$pr_number"/labels --jq '[.[].name]')
+
+  local stale
+  stale=$(echo "$all_labels" | jq -r --arg l "$base_label" '.[] | select(startswith("base:") and . != $l)')
+  while IFS= read -r blabel; do
+    [[ -z "$blabel" ]] && continue
+    local encoded
+    encoded=$(printf '%s' "$blabel" | sed 's/:/%3A/g')
+    gh api repos/"$repo"/issues/"$pr_number"/labels/"$encoded" -X DELETE || true
+  done <<< "$stale"
+
+  local has_base
+  has_base=$(echo "$all_labels" | jq --arg l "$base_label" 'any(.[]; . == $l)')
+  [[ "$has_base" != "true" ]] && ensure_label_and_add "$repo" "$pr_number" "$base_label" "0e8a16"
+}
+
 # Sync blocking/on-hold labels and reviewers when a project board drag changes
 # a PR's status field, then refresh the board status. Shared by every trigger
 # that reacts to a manual board drag (repository_dispatch: project_drag).
@@ -236,7 +270,7 @@ sync_labels_for_drag() {
     gh api repos/"$repo"/issues/"$pr_number"/labels/%2Eneeds-decision -X DELETE || true
   fi
 
-  if [[ "$old_status" == "On Hold" && "$new_status" != "On Hold" ]]; then
+  if [[ "$old_status" == "In review" && "$new_status" != "In review" ]]; then
     gh api repos/"$repo"/issues/"$pr_number"/labels/%2Ehold -X DELETE || true
   fi
 
@@ -245,13 +279,11 @@ sync_labels_for_drag() {
     has_blocking=$(gh api repos/"$repo"/issues/"$pr_number"/labels \
       --jq 'any(.[].name; . == ".needs-changes" or . == ".needs-decision" or . == ".question")')
     if [[ "$has_blocking" != "true" && "$sender" != *"[bot]"* ]]; then
-      gh api repos/"$repo"/labels -f name=".needs-decision" -f color="e11d48" >/dev/null 2>&1 || true
-      gh api repos/"$repo"/issues/"$pr_number"/labels -f "labels[]=.needs-decision"
+      ensure_label_and_add "$repo" "$pr_number" ".needs-decision" "e11d48"
     fi
-  elif [[ "$new_status" == "On Hold" ]]; then
-    gh api repos/"$repo"/labels -f name=".hold" -f color="e11d48" >/dev/null 2>&1 || true
-    gh api repos/"$repo"/issues/"$pr_number"/labels -f "labels[]=.hold"
-  elif [[ "$new_status" == "Unassigned" && "$sender" != *"[bot]"* ]]; then
+  elif [[ "$new_status" == "In review" ]]; then
+    ensure_label_and_add "$repo" "$pr_number" ".hold" "e11d48"
+  elif [[ "$new_status" == "Ready" && "$sender" != *"[bot]"* ]]; then
     local reviewer_logins
     reviewer_logins=$(gh api repos/"$repo"/pulls/"$pr_number" --jq '.requested_reviewers[].login')
     while IFS= read -r login; do

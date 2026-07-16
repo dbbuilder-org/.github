@@ -27,18 +27,14 @@ jobs:
   sync:
     uses: dbbuilder-org/.github/.github/workflows/pr-status-sync.yml@main
     with:
-      # TODO: confirm these match this repo's GitHub Project board
-      # (Settings > ... or the board's field URLs). The values below are
-      # the "FireProof" project (project 6) — reused here on the assumption
-      # that this repo tracks PRs on that same board; update if not.
-      PROJECT_ID: "PVT_kwDODmqj9M4BZMhd"
-      PR_STATUS_FIELD_ID: "PVTSSF_lADODmqj9M4BZMhdzhUg79k"
-      OPT_UNASSIGNED: "faf07413"
-      OPT_IN_QUEUE: "92a631df"
-      OPT_BLOCKED: "408eadfa"
-      OPT_ON_HOLD: "70e50c11"
-      OPT_MERGED: "1292fa0e"
-      OPT_CLOSED: "c7fd025a"
+      PROJECT_ID: "PVT_kwDODmqj9M4Bda28"
+      PR_STATUS_FIELD_ID: "PVTSSF_lADODmqj9M4Bda28zhX8h7Q"
+      OPT_UNASSIGNED: "61e4505c"
+      OPT_IN_QUEUE: "47fc9ee4"
+      OPT_BLOCKED: "fd63df97"
+      OPT_ON_HOLD: "df73e18b"
+      OPT_MERGED: "98236657"
+      OPT_CLOSED: "4ad4d27e"
       event_name: ${{ github.event_name }}
       repo: ${{ github.repository }}
       org: ${{ github.repository_owner }}

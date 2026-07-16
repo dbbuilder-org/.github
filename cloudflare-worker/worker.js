@@ -69,12 +69,7 @@ export default {
       'https://api.github.com/repos/dbbuilder-org/.github/dispatches',
       {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Accept': 'application/vnd.github+json',
-          'Content-Type': 'application/json',
-          'User-Agent': 'DBBuilder-Workflow-Worker',
-        },
+        headers: githubHeaders(token, { 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           event_type: 'project_drag',
           client_payload: {
@@ -100,6 +95,15 @@ export default {
 
 // ── GitHub App JWT + installation token ──────────────────────────────────────
 
+function githubHeaders(token, extra = {}) {
+  return {
+    'Authorization': `Bearer ${token}`,
+    'Accept': 'application/vnd.github+json',
+    'User-Agent': 'DBBuilder-Workflow-Worker',
+    ...extra,
+  };
+}
+
 async function getInstallationToken(appId, pemKey, installationId) {
   const jwt = await generateJWT(appId, pemKey);
 
@@ -107,11 +111,7 @@ async function getInstallationToken(appId, pemKey, installationId) {
     `https://api.github.com/app/installations/${installationId}/access_tokens`,
     {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${jwt}`,
-        'Accept': 'application/vnd.github+json',
-        'User-Agent': 'DBBuilder-Workflow-Worker',
-      },
+      headers: githubHeaders(jwt),
     }
   );
 

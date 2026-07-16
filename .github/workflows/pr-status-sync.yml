@@ -38,8 +38,9 @@ on:
         required: true
         type: string
       repo:
-        required: true
+        required: false
         type: string
+        default: ''
       org:
         required: false
         type: string
@@ -128,16 +129,7 @@ jobs:
         run: |
           source /tmp/pr-helpers.sh
           BASE_REF=$(gh api repos/"$REPO"/pulls/"$PR_NUMBER" --jq '.base.ref')
-          BASE_LABEL="base:$BASE_REF"
-          STALE_BASE=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels \
-            --jq --arg l "$BASE_LABEL" '[.[].name] | .[] | select(startswith("base:") and . != $l)')
-          while IFS= read -r BLABEL; do
-            [[ -z "$BLABEL" ]] && continue
-            ENCODED=$(printf '%s' "$BLABEL" | sed 's/:/%3A/g')
-            gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/"$ENCODED" -X DELETE || true
-          done <<< "$STALE_BASE"
-          gh api repos/"$REPO"/labels -f name="$BASE_LABEL" -f color="0e8a16" >/dev/null 2>&1 || true
-          gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=$BASE_LABEL"
+          sync_base_label "$REPO" "$PR_NUMBER" "$BASE_REF"
           ITEM_ID=$(get_item_id "$PR_NODE_ID")
           assign_iteration "$ITEM_ID"
           set_pr_status "$PR_NODE_ID" "$PR_NUMBER" "$REPO"
@@ -203,10 +195,7 @@ jobs:
               LABEL="reviewer:$SIMPLE_NAME"
               ALL_LABELS=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels --jq '[.[].name]')
               HAS=$(echo "$ALL_LABELS" | jq --arg l "$LABEL" 'any(.[]; . == $l)')
-              if [[ "$HAS" != "true" ]]; then
-                gh api repos/"$REPO"/labels -f name="$LABEL" -f color="0075ca" >/dev/null 2>&1 || true
-                gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=$LABEL"
-              fi
+              [[ "$HAS" != "true" ]] && ensure_label_and_add "$REPO" "$PR_NUMBER" "$LABEL" "0075ca"
             else
               echo "Login '$REVIEWER_LOGIN' not in org member map — skipping"
             fi
@@ -220,8 +209,7 @@ jobs:
                 continue
               fi
               LABEL="reviewer:$SIMPLE_NAME"
-              gh api repos/"$REPO"/labels -f name="$LABEL" -f color="0075ca" >/dev/null 2>&1 || true
-              gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=$LABEL"
+              ensure_label_and_add "$REPO" "$PR_NUMBER" "$LABEL" "0075ca"
             done <<< "$REVIEWER_LOGINS"
           fi
           set_pr_status "$PR_NODE_ID" "$PR_NUMBER" "$REPO"
@@ -342,18 +330,7 @@ jobs:
             ALL_LABELS=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels --jq '[.[].name]')
 
             # ── Ensure base: label ───────────────────────────────────────
-            BASE_LABEL="base:$BASE_REF"
-            STALE_BASE=$(echo "$ALL_LABELS" | jq -r --arg l "$BASE_LABEL" '.[] | select(startswith("base:") and . != $l)')
-            while IFS= read -r BLABEL; do
-              [[ -z "$BLABEL" ]] && continue
-              ENCODED=$(printf '%s' "$BLABEL" | sed 's/:/%3A/g')
-              gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels/"$ENCODED" -X DELETE || true
-            done <<< "$STALE_BASE"
-            HAS_BASE=$(echo "$ALL_LABELS" | jq --arg l "$BASE_LABEL" 'any(.[]; . == $l)')
-            if [[ "$HAS_BASE" != "true" ]]; then
-              gh api repos/"$REPO"/labels -f name="$BASE_LABEL" -f color="0e8a16" >/dev/null 2>&1 || true
-              gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=$BASE_LABEL"
-            fi
+            sync_base_label "$REPO" "$PR_NUMBER" "$BASE_REF" "$ALL_LABELS"
 
             # ── Add labels for reviewers that don't have one ─────────────
             for LOGIN in $REVIEWERS; do
@@ -366,8 +343,7 @@ jobs:
               HAS=$(echo "$ALL_LABELS" | jq --arg l "$LABEL" 'any(.[]; . == $l)')
               if [[ "$HAS" != "true" ]]; then
                 echo "PR #$PR_NUMBER: adding missing label '$LABEL' for reviewer '$LOGIN'"
-                gh api repos/"$REPO"/labels -f name="$LABEL" -f color="0075ca" >/dev/null 2>&1 || true
-                gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=$LABEL"
+                ensure_label_and_add "$REPO" "$PR_NUMBER" "$LABEL" "0075ca"
               fi
             done
 
@@ -682,8 +658,7 @@ jobs:
           REPO: ${{ inputs.repo }}
         run: |
           source /tmp/pr-helpers.sh
-          gh api repos/"$REPO"/labels -f name=".needs-changes" -f color="e11d48" >/dev/null 2>&1 || true
-          gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels -f "labels[]=.needs-changes"
+          ensure_label_and_add "$REPO" "$PR_NUMBER" ".needs-changes" "e11d48"
           set_pr_status "$PR_NODE_ID" "$PR_NUMBER" "$REPO"
 
   # ── pull_request_review: dismissed ───────────────────────────────────────

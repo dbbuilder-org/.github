@@ -15,20 +15,19 @@ jobs:
   # happened on. To add a board, add another job below with its IDs — the
   # sync logic itself lives only in pr-status-sync.yml.
 
-  handle-drag-fireproof:
-    if: github.event.client_payload.field_node_id == 'PVTSSF_lADODmqj9M4BZMhdzhUg79k'
+  handle-drag-pr-boards:
+    if: github.event.client_payload.field_node_id == 'PVTSSF_lADODmqj9M4Bda28zhX8h7Q'
     uses: dbbuilder-org/.github/.github/workflows/pr-status-sync.yml@main
     with:
-      PROJECT_ID: "PVT_kwDODmqj9M4BZMhd"
-      PR_STATUS_FIELD_ID: "PVTSSF_lADODmqj9M4BZMhdzhUg79k"
-      OPT_UNASSIGNED: "faf07413"
-      OPT_IN_QUEUE: "92a631df"
-      OPT_BLOCKED: "408eadfa"
-      OPT_ON_HOLD: "70e50c11"
-      OPT_MERGED: "1292fa0e"
-      OPT_CLOSED: "c7fd025a"
+      PROJECT_ID: "PVT_kwDODmqj9M4Bda28"
+      PR_STATUS_FIELD_ID: "PVTSSF_lADODmqj9M4Bda28zhX8h7Q"
+      OPT_UNASSIGNED: "61e4505c"
+      OPT_IN_QUEUE: "47fc9ee4"
+      OPT_BLOCKED: "fd63df97"
+      OPT_ON_HOLD: "df73e18b"
+      OPT_MERGED: "98236657"
+      OPT_CLOSED: "4ad4d27e"
       event_name: repository_dispatch
-      repo: ""
       content_node_id: ${{ github.event.client_payload.content_node_id }}
       old_status: ${{ github.event.client_payload.from_status }}
       new_status: ${{ github.event.client_payload.to_status }}
