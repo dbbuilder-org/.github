@@ -195,7 +195,9 @@ jobs:
               LABEL="reviewer:$SIMPLE_NAME"
               ALL_LABELS=$(gh api repos/"$REPO"/issues/"$PR_NUMBER"/labels --jq '[.[].name]')
               HAS=$(echo "$ALL_LABELS" | jq --arg l "$LABEL" 'any(.[]; . == $l)')
-              [[ "$HAS" != "true" ]] && ensure_label_and_add "$REPO" "$PR_NUMBER" "$LABEL" "0075ca"
+              if [[ "$HAS" != "true" ]]; then
+                ensure_label_and_add "$REPO" "$PR_NUMBER" "$LABEL" "0075ca"
+              fi
             else
               echo "Login '$REVIEWER_LOGIN' not in org member map — skipping"
             fi
@@ -313,7 +315,6 @@ jobs:
           ORG: ${{ inputs.org }}
         run: |
           source /tmp/pr-helpers.sh
-          set -x
           build_member_maps
 
           PR_NUMBERS=$(gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate --jq '.[].number')

@@ -247,7 +247,9 @@ sync_base_label() {
 
   local has_base
   has_base=$(echo "$all_labels" | jq --arg l "$base_label" 'any(.[]; . == $l)')
-  [[ "$has_base" != "true" ]] && ensure_label_and_add "$repo" "$pr_number" "$base_label" "0e8a16"
+  if [[ "$has_base" != "true" ]]; then
+    ensure_label_and_add "$repo" "$pr_number" "$base_label" "0e8a16"
+  fi
 }
 
 # Sync blocking/on-hold labels and reviewers when a project board drag changes
