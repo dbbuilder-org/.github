@@ -241,7 +241,7 @@ tmp/
 temp/
 *.tmp
 working/
-.working/
+.working
 
 ## Deployment artifacts (should never have been committed — see scripts/one-off/purge_publish_artifacts.md)
 publish/
