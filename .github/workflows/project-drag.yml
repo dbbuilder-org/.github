@@ -54,6 +54,6 @@ jobs:
       content_node_id: ${{ github.event.client_payload.content_node_id }}
       new_status: ${{ github.event.client_payload.to_status }}
     secrets:
-      linear_api_key: ${{ secrets.LINEAR_APP }}
+      linear_api_key: ${{ secrets.LINEAR_API_KEY }}
       app_id: ${{ secrets.WORKFLOW_APP_ID }}
       app_private_key: ${{ secrets.WORKFLOW_APP_PRIVATE_KEY }}
