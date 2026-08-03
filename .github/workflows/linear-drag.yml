@@ -89,6 +89,28 @@ jobs:
             }' -f proj="$PROJECT_ID" -f content="$NODE_ID" \
             --jq '.data.addProjectV2ItemById.item.id')
 
+          # Load-bearing, not just an optimization: without this check, a
+          # write here can trigger a GitHub Project webhook, which triggers
+          # sync_linear_status back in linear-status-sync.yml, which (absent
+          # its own matching guard) can write back here — an unbounded
+          # feedback loop the moment either side's webhook fires on a write
+          # that doesn't actually change anything (confirmed 2026-08-03).
+          CURRENT_OPT=$(gh api graphql -f query='
+            query($item: ID!) {
+              node(id: $item) {
+                ... on ProjectV2Item {
+                  fieldValueByName(name: "Status") {
+                    ... on ProjectV2ItemFieldSingleSelectValue { optionId }
+                  }
+                }
+              }
+            }' -f item="$ITEM_ID" --jq '.data.node.fieldValueByName.optionId // empty')
+
+          if [[ "$CURRENT_OPT" == "$OPT" ]]; then
+            echo "Project status already '$NEW_STATUS' — skipping"
+            exit 0
+          fi
+
           gh api graphql -f query='
             mutation($proj: ID!, $item: ID!, $field: ID!, $opt: String!) {
               updateProjectV2ItemFieldValue(input: {

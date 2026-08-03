@@ -26,13 +26,13 @@ linear_api() {
 # Resolve a GitHub issue/PR URL to its linked Linear issue via Linear's own
 # GitHub integration attachments (no magic-word parsing needed).
 # Args: HTML_URL
-# Prints: "ISSUE_ID<TAB>STATE_NAME", or nothing if not linked.
+# Prints: "ISSUE_ID<TAB>CURRENT_STATE_ID", or nothing if not linked.
 linear_lookup() {
   local html_url="$1"
   linear_api \
-    'query($url: String!) { attachmentsForURL(url: $url) { nodes { issue { id state { name } } } } }' \
+    'query($url: String!) { attachmentsForURL(url: $url) { nodes { issue { id state { id } } } } }' \
     "$(jq -n --arg url "$html_url" '{url: $url}')" \
-    | jq -r '.data.attachmentsForURL.nodes[0] | select(. != null) | "\(.issue.id)\t\(.issue.state.name)"'
+    | jq -r '.data.attachmentsForURL.nodes[0] | select(. != null) | "\(.issue.id)\t\(.issue.state.id)"'
 }
 
 # Set a Linear issue's workflow state.
@@ -46,8 +46,12 @@ linear_set_state() {
 }
 
 # Look up the Linear issue linked to HTML_URL and move it to STATE_ID.
-# No-ops (logs + returns 0) when the item isn't linked to a Linear issue, or
-# when STATE_ID is empty — most GitHub issues/PRs in a repo won't be linked.
+# No-ops (logs + returns 0) when the item isn't linked to a Linear issue, when
+# STATE_ID is empty, or when it's already at STATE_ID — that last check is
+# load-bearing, not just an optimization: without it, this and the GitHub
+# Project status write it can trigger in turn (see linear-drag.yml) form an
+# unbounded feedback loop the moment either side's webhook fires on a write
+# that doesn't actually change anything (confirmed happening 2026-08-03).
 # Args: HTML_URL  STATE_ID
 sync_linear_status() {
   local html_url="$1" state_id="$2"
@@ -56,11 +60,16 @@ sync_linear_status() {
     return 0
   fi
 
-  local lookup issue_id
+  local lookup issue_id current_state_id
   lookup=$(linear_lookup "$html_url")
   issue_id=$(cut -f1 <<< "$lookup")
+  current_state_id=$(cut -f2 <<< "$lookup")
   if [[ -z "$issue_id" ]]; then
     echo "sync_linear_status: $html_url has no linked Linear issue — skipping"
+    return 0
+  fi
+  if [[ "$current_state_id" == "$state_id" ]]; then
+    echo "sync_linear_status: $issue_id already at target state — skipping"
     return 0
   fi
 
