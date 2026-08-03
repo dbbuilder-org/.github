@@ -1,0 +1,32 @@
+name: Sync Status to Linear
+
+on:
+  issues:
+    types: [closed, reopened, labeled, unlabeled]
+  pull_request_target:
+    types: [opened, closed]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  sync:
+    uses: __ORGANIZATION__/.github/.github/workflows/linear-status-sync.yml@main
+    with:
+      STATE_TODO: "__STATE_TODO__"
+      STATE_BLOCKED: "__STATE_BLOCKED__"
+      STATE_IN_REVIEW: "__STATE_IN_REVIEW__"
+      STATE_DONE: "__STATE_DONE__"
+      STATE_CANCELED: "__STATE_CANCELED__"
+      STATE_DUPLICATE: "__STATE_DUPLICATE__"
+      event_name: ${{ github.event_name }}
+      repo: ${{ github.repository }}
+      action: ${{ github.event.action }}
+      item_number: ${{ github.event.issue.number || github.event.pull_request.number }}
+      html_url: ${{ github.event.issue.html_url || github.event.pull_request.html_url }}
+      state_reason: ${{ github.event.issue.state_reason }}
+      merged: ${{ github.event.pull_request.merged }}
+    secrets:
+      linear_api_key: ${{ secrets.LINEAR_API_KEY }}

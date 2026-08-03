@@ -1,0 +1,340 @@
+name: "Dispatch: Onboard Linear Status Sync"
+
+# Manually-triggered admin workflow. Named/prefixed "Dispatch:" so future
+# workflow_dispatch-only admin tasks group together in the Actions UI list.
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "Target repo name (e.g. billboard)"
+        required: true
+        type: string
+      linear_team_key:
+        description: "Linear team key to sync with (e.g. BB)"
+        required: true
+        type: string
+      github_project_number:
+        description: "Existing GitHub Project number (its Issue Boards) — must already exist"
+        required: true
+        type: number
+      organization:
+        description: "GitHub org"
+        required: false
+        type: string
+        default: dbbuilder-org
+      worker_url:
+        description: "Cloudflare Worker base URL"
+        required: false
+        type: string
+        default: https://plain-pine-0b38.ransom-1d4.workers.dev
+      open_pr_for_github:
+        description: "Open a PR for the project-drag.yml/linear-drag.yml changes instead of pushing to main"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  onboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.WORKFLOW_APP_ID }}
+          private-key: ${{ secrets.WORKFLOW_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Resolve Linear team + workflow states
+        id: linear-team
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          TEAM_KEY: ${{ inputs.linear_team_key }}
+        run: |
+          set -e
+          RESULT=$(curl -s https://api.linear.app/graphql \
+            -H "Authorization: $LINEAR_API_KEY" -H "Content-Type: application/json" \
+            -d "$(jq -n --arg key "$TEAM_KEY" '{
+              query: "query($key: String!) { teams(filter: { key: { eq: $key } }) { nodes { id states(first: 50) { nodes { id name } } } } }",
+              variables: {key: $key}
+            }')")
+
+          TEAM_ID=$(echo "$RESULT" | jq -r '.data.teams.nodes[0].id // empty')
+          if [[ -z "$TEAM_ID" ]]; then
+            echo "::error::No Linear team found with key '$TEAM_KEY'"
+            exit 1
+          fi
+
+          get_state() { echo "$RESULT" | jq -r --arg n "$1" '.data.teams.nodes[0].states.nodes[] | select(.name == $n) | .id' | head -1; }
+
+          for req in Todo Blocked "In Review" Done Canceled Duplicate; do
+            if [[ -z "$(get_state "$req")" ]]; then
+              echo "::error::Linear team '$TEAM_KEY' is missing required workflow state '$req'"
+              exit 1
+            fi
+          done
+
+          {
+            echo "team_id=$TEAM_ID"
+            echo "state_backlog=$(get_state Backlog)"
+            echo "state_todo=$(get_state Todo)"
+            echo "state_in_progress=$(get_state "In Progress")"
+            echo "state_blocked=$(get_state Blocked)"
+            echo "state_in_review=$(get_state "In Review")"
+            echo "state_done=$(get_state Done)"
+            echo "state_canceled=$(get_state Canceled)"
+            echo "state_duplicate=$(get_state Duplicate)"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resolved team $TEAM_ID"
+
+      - name: Resolve GitHub Project Status field + options
+        id: gh-project
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ORG: ${{ inputs.organization }}
+          PROJECT_NUMBER: ${{ inputs.github_project_number }}
+        run: |
+          set -e
+          PROJECT_JSON=$(gh project view "$PROJECT_NUMBER" --owner "$ORG" --format json)
+          PROJECT_ID=$(echo "$PROJECT_JSON" | jq -r '.id')
+
+          FIELDS_JSON=$(gh project field-list "$PROJECT_NUMBER" --owner "$ORG" --format json)
+          FIELD_ID=$(echo "$FIELDS_JSON" | jq -r '.fields[] | select(.name == "Status") | .id')
+          if [[ -z "$FIELD_ID" ]]; then
+            echo "::error::Project $PROJECT_NUMBER has no 'Status' field"
+            exit 1
+          fi
+
+          get_opt() { echo "$FIELDS_JSON" | jq -r --arg n "$1" '.fields[] | select(.name == "Status") | .options[] | select(.name == $n) | .id'; }
+
+          for req in Todo Blocked "In Review" Done Canceled; do
+            if [[ -z "$(get_opt "$req")" ]]; then
+              echo "::error::Project $PROJECT_NUMBER's Status field is missing required option '$req'"
+              exit 1
+            fi
+          done
+
+          {
+            echo "project_id=$PROJECT_ID"
+            echo "field_id=$FIELD_ID"
+            echo "opt_backlog=$(get_opt Backlog)"
+            echo "opt_todo=$(get_opt Todo)"
+            echo "opt_in_progress=$(get_opt "In Progress")"
+            echo "opt_blocked=$(get_opt Blocked)"
+            echo "opt_in_review=$(get_opt "In Review")"
+            echo "opt_done=$(get_opt Done)"
+            echo "opt_canceled=$(get_opt Canceled)"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resolved project $PROJECT_ID, field $FIELD_ID"
+
+      - name: Link repo to project
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ORG: ${{ inputs.organization }}
+          REPO: ${{ inputs.repo }}
+          PROJECT_ID: ${{ steps.gh-project.outputs.project_id }}
+        run: |
+          set -e
+          REPO_ID=$(gh api "repos/$ORG/$REPO" --jq '.node_id')
+          LINKED=$(gh api graphql -f query='
+            query($proj: ID!) {
+              node(id: $proj) {
+                ... on ProjectV2 { repositories(first: 100) { nodes { nameWithOwner } } }
+              }
+            }' -f proj="$PROJECT_ID" --jq '.data.node.repositories.nodes[].nameWithOwner')
+
+          if echo "$LINKED" | grep -qx "$ORG/$REPO"; then
+            echo "already linked"
+          else
+            gh api graphql -f query='
+              mutation($proj: ID!, $repo: ID!) {
+                linkProjectV2ToRepository(input: { projectId: $proj, repositoryId: $repo }) {
+                  repository { nameWithOwner }
+                }
+              }' -f proj="$PROJECT_ID" -f repo="$REPO_ID" >/dev/null
+            echo "linked"
+          fi
+
+      - name: Create Linear webhook
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          LINEAR_WEBHOOK_SECRET: ${{ secrets.LINEAR_WEBHOOK_SECRET }}
+          TEAM_KEY: ${{ inputs.linear_team_key }}
+          TEAM_ID: ${{ steps.linear-team.outputs.team_id }}
+          WEBHOOK_URL: ${{ inputs.worker_url }}/linear-webhook
+        run: |
+          set -e
+          EXISTING=$(curl -s https://api.linear.app/graphql \
+            -H "Authorization: $LINEAR_API_KEY" -H "Content-Type: application/json" \
+            -d '{"query":"{ webhooks { nodes { id url team { key } } } }"}' \
+            | jq -r --arg url "$WEBHOOK_URL" --arg key "$TEAM_KEY" \
+              '.data.webhooks.nodes[] | select(.url == $url and .team.key == $key) | .id')
+
+          if [[ -n "$EXISTING" ]]; then
+            echo "already exists ($EXISTING)"
+          else
+            RESULT=$(curl -s https://api.linear.app/graphql \
+              -H "Authorization: $LINEAR_API_KEY" -H "Content-Type: application/json" \
+              -d "$(jq -n --arg label "$TEAM_KEY status sync (GitHub)" --arg url "$WEBHOOK_URL" \
+                --arg teamId "$TEAM_ID" --arg secret "$LINEAR_WEBHOOK_SECRET" '{
+                  query: "mutation($input: WebhookCreateInput!) { webhookCreate(input: $input) { success webhook { id } } }",
+                  variables: {input: {label: $label, url: $url, resourceTypes: ["Issue"], teamId: $teamId, secret: $secret, enabled: true}}
+                }')")
+            SUCCESS=$(echo "$RESULT" | jq -r '.data.webhookCreate.success')
+            if [[ "$SUCCESS" != "true" ]]; then
+              echo "::error::Failed to create Linear webhook: $RESULT"
+              exit 1
+            fi
+            echo "created ($(echo "$RESULT" | jq -r '.data.webhookCreate.webhook.id'))"
+          fi
+
+      - name: Write caller workflow into target repo
+        id: caller-workflow
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ORG: ${{ inputs.organization }}
+          REPO: ${{ inputs.repo }}
+          TEAM_KEY: ${{ inputs.linear_team_key }}
+          STATE_TODO: ${{ steps.linear-team.outputs.state_todo }}
+          STATE_BLOCKED: ${{ steps.linear-team.outputs.state_blocked }}
+          STATE_IN_REVIEW: ${{ steps.linear-team.outputs.state_in_review }}
+          STATE_DONE: ${{ steps.linear-team.outputs.state_done }}
+          STATE_CANCELED: ${{ steps.linear-team.outputs.state_canceled }}
+          STATE_DUPLICATE: ${{ steps.linear-team.outputs.state_duplicate }}
+        run: |
+          set -e
+          if gh api "repos/$ORG/$REPO/contents/.github/workflows/linear-status-sync.yml" >/dev/null 2>&1; then
+            echo "already exists in $ORG/$REPO — leaving it alone"
+            echo "opened=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git config --global user.name "dbbuilder-workflow[bot]"
+          git config --global user.email "dbbuilder-workflow[bot]@users.noreply.github.com"
+
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/$ORG/$REPO.git" target-repo
+          cd target-repo
+          BRANCH="feat/linear-status-sync"
+          git checkout -b "$BRANCH"
+          mkdir -p .github/workflows
+
+          sed \
+            -e "s/__ORGANIZATION__/$ORG/g" \
+            -e "s/__STATE_TODO__/$STATE_TODO/g" \
+            -e "s/__STATE_BLOCKED__/$STATE_BLOCKED/g" \
+            -e "s/__STATE_IN_REVIEW__/$STATE_IN_REVIEW/g" \
+            -e "s/__STATE_DONE__/$STATE_DONE/g" \
+            -e "s/__STATE_CANCELED__/$STATE_CANCELED/g" \
+            -e "s/__STATE_DUPLICATE__/$STATE_DUPLICATE/g" \
+            ../.github/workflow-dependencies/caller-workflow-template.yml > .github/workflows/linear-status-sync.yml
+
+          git add .github/workflows/linear-status-sync.yml
+          git commit -m "Add Linear status sync workflow" \
+            -m "Calls $ORG/.github's reusable linear-status-sync.yml, wired to Linear team $TEAM_KEY."
+          git push -u origin "$BRANCH"
+
+          gh pr create --repo "$ORG/$REPO" --head "$BRANCH" --base main \
+            --title "Add Linear status sync workflow" \
+            --body "Wires this repo into the shared linear-status-sync.yml, syncing issue/PR status to Linear team $TEAM_KEY."
+          echo "opened=true" >> "$GITHUB_OUTPUT"
+
+      - name: Add drag-routing to project-drag.yml + linear-drag.yml
+        id: routing
+        env:
+          ORG: ${{ inputs.organization }}
+          REPO: ${{ inputs.repo }}
+          PROJECT_ID: ${{ steps.gh-project.outputs.project_id }}
+          FIELD_ID: ${{ steps.gh-project.outputs.field_id }}
+        run: |
+          set -e
+          JOB_SLUG=$(echo "$REPO" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g')
+
+          python3 .github/workflow-dependencies/apply_routing.py \
+            --project-drag-file .github/workflows/project-drag.yml \
+            --linear-drag-file .github/workflows/linear-drag.yml \
+            --repo "$ORG/$REPO" \
+            --job-slug "$JOB_SLUG" \
+            --project-id "$PROJECT_ID" \
+            --field-id "$FIELD_ID" \
+            --state-backlog "${{ steps.linear-team.outputs.state_backlog }}" \
+            --state-todo "${{ steps.linear-team.outputs.state_todo }}" \
+            --state-in-progress "${{ steps.linear-team.outputs.state_in_progress }}" \
+            --state-blocked "${{ steps.linear-team.outputs.state_blocked }}" \
+            --state-in-review "${{ steps.linear-team.outputs.state_in_review }}" \
+            --state-done "${{ steps.linear-team.outputs.state_done }}" \
+            --state-canceled "${{ steps.linear-team.outputs.state_canceled }}" \
+            --state-duplicate "${{ steps.linear-team.outputs.state_duplicate }}" \
+            --opt-backlog "${{ steps.gh-project.outputs.opt_backlog }}" \
+            --opt-todo "${{ steps.gh-project.outputs.opt_todo }}" \
+            --opt-in-progress "${{ steps.gh-project.outputs.opt_in_progress }}" \
+            --opt-in-review "${{ steps.gh-project.outputs.opt_in_review }}" \
+            --opt-blocked "${{ steps.gh-project.outputs.opt_blocked }}" \
+            --opt-done "${{ steps.gh-project.outputs.opt_done }}" \
+            --opt-canceled "${{ steps.gh-project.outputs.opt_canceled }}"
+
+          echo "job_slug=$JOB_SLUG" >> "$GITHUB_OUTPUT"
+
+      - name: Publish routing changes
+        id: publish
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ORG: ${{ inputs.organization }}
+          REPO: ${{ inputs.repo }}
+          TEAM_KEY: ${{ inputs.linear_team_key }}
+          JOB_SLUG: ${{ steps.routing.outputs.job_slug }}
+          OPEN_PR: ${{ inputs.open_pr_for_github }}
+        run: |
+          set -e
+          if git diff --quiet -- .github/workflows/project-drag.yml .github/workflows/linear-drag.yml; then
+            echo "no changes needed (routing already existed)"
+            echo "opened=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git config --global user.name "dbbuilder-workflow[bot]"
+          git config --global user.email "dbbuilder-workflow[bot]@users.noreply.github.com"
+          git add .github/workflows/project-drag.yml .github/workflows/linear-drag.yml
+
+          if [[ "$OPEN_PR" == "true" ]]; then
+            BRANCH="feat/linear-status-sync-$JOB_SLUG"
+            git checkout -b "$BRANCH"
+            git commit -m "Route $ORG/$REPO's drags to/from Linear team $TEAM_KEY"
+            git push -u origin "$BRANCH"
+            gh pr create --repo "$ORG/.github" --head "$BRANCH" --base main \
+              --title "Route $ORG/$REPO's drags to/from Linear team $TEAM_KEY" \
+              --body "Adds project-drag.yml + linear-drag.yml routing for $ORG/$REPO <-> Linear team $TEAM_KEY."
+            echo "opened=true" >> "$GITHUB_OUTPUT"
+          else
+            git commit -m "Route $ORG/$REPO's drags to/from Linear team $TEAM_KEY"
+            git push origin main
+            echo "opened=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Summary
+        if: always()
+        env:
+          REPO: ${{ inputs.organization }}/${{ inputs.repo }}
+          CALLER_PR_OPENED: ${{ steps.caller-workflow.outputs.opened }}
+          ROUTING_PR_OPENED: ${{ steps.publish.outputs.opened }}
+        run: |
+          {
+            echo "## Onboarded $REPO"
+            echo ""
+            if [[ "$CALLER_PR_OPENED" == "true" ]]; then
+              echo "- [ ] Merge the caller-workflow PR opened in $REPO"
+            fi
+            if [[ "$ROUTING_PR_OPENED" == "true" ]]; then
+              echo "- [ ] Merge the routing PR opened in ${{ inputs.organization }}/.github"
+            fi
+            echo "- [ ] Verify Linear's GitHub integration is connected for $REPO (prerequisite this workflow can't check)"
+            echo "- [ ] Test: close/reopen/label an issue in $REPO, confirm the linked Linear issue's state changes"
+            echo "- [ ] Test: change the Linear issue's state, confirm the GitHub Project card updates"
+            echo "- [ ] Test: drag a card on the GitHub Project board, confirm the linked Linear issue's state changes"
+          } >> "$GITHUB_STEP_SUMMARY"

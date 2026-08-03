@@ -37,7 +37,7 @@ jobs:
       app_private_key: ${{ secrets.WORKFLOW_APP_PRIVATE_KEY }}
 
   # Routes a drag on the "Issue Boards" project's Status field to Linear,
-  # moving the linked SV1 issue to the matching workflow state.
+  # moving the linked BB (Billboard) issue to the matching workflow state.
   handle-drag-issue-boards:
     if: github.event.client_payload.field_node_id == 'PVTSSF_lADODmqj9M4Be0uqzhZMFd8'
     uses: dbbuilder-org/.github/.github/workflows/linear-status-sync.yml@main
