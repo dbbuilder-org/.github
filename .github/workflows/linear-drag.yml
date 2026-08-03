@@ -10,11 +10,14 @@ permissions:
 
 jobs:
   # Mirrors a Linear issue's workflow-state change onto the linked item's
-  # Status field on the "Issue Boards" project (dbbuilder-org/projects/8).
-  # Linear's own GitHub integration already handles open <-> closed (Done
-  # maps to a closed issue automatically); this covers every other state,
-  # which has no native equivalent. "Duplicate" has no matching Status
-  # column, so it becomes a label instead.
+  # Status field on that repo's "Issue Boards" project. Linear's own GitHub
+  # integration already handles open <-> closed (Done maps to a closed issue
+  # automatically); this covers every other state, which has no native
+  # equivalent. "Duplicate" has no matching Status column on any board, so
+  # it becomes a label instead.
+  #
+  # To onboard another repo, add a case arm below with its project/field/
+  # option IDs (deploy/New-LinearStatusSync.ps1 does this automatically).
   sync:
     runs-on: ubuntu-latest
     steps:
@@ -34,22 +37,46 @@ jobs:
           set -e
           FULL_REPO="$OWNER/$REPO"
 
+          # ── Per-repo Issue Boards project/field/option IDs ──────────────
+          case "$FULL_REPO" in
+            dbbuilder-org/billboard)
+              PROJECT_ID="PVT_kwDODmqj9M4Be0uq"
+              FIELD_ID="PVTSSF_lADODmqj9M4Be0uqzhZMFd8"
+              OPT_BACKLOG="cdbc5f91"
+              OPT_TODO="f75ad846"
+              OPT_IN_PROGRESS="47fc9ee4"
+              OPT_IN_REVIEW="9c0c29a2"
+              OPT_BLOCKED="16765e6b"
+              OPT_DONE="98236657"
+              OPT_CANCELED="779953c4"
+              ;;
+            *)
+              echo "No Issue Boards project registered for '$FULL_REPO' — skipping"
+              exit 0
+              ;;
+          esac
+
           if [[ "$NEW_STATUS" == "Duplicate" ]]; then
             gh api repos/"$FULL_REPO"/labels -f name="Condition:Duplicate" -f color="cfd3d7" >/dev/null 2>&1 || true
             gh api repos/"$FULL_REPO"/issues/"$NUMBER"/labels -f "labels[]=Condition:Duplicate"
             exit 0
           fi
 
+          # ── Status name -> that repo's option ID ─────────────────────────
           case "$NEW_STATUS" in
-            Backlog)       OPT="cdbc5f91" ;;
-            Todo)          OPT="f75ad846" ;;
-            "In Progress") OPT="47fc9ee4" ;;
-            "In Review")   OPT="9c0c29a2" ;;
-            Blocked)       OPT="16765e6b" ;;
-            Done)          OPT="98236657" ;;
-            Canceled)      OPT="779953c4" ;;
+            Backlog)       OPT="$OPT_BACKLOG" ;;
+            Todo)          OPT="$OPT_TODO" ;;
+            "In Progress") OPT="$OPT_IN_PROGRESS" ;;
+            "In Review")   OPT="$OPT_IN_REVIEW" ;;
+            Blocked)       OPT="$OPT_BLOCKED" ;;
+            Done)          OPT="$OPT_DONE" ;;
+            Canceled)      OPT="$OPT_CANCELED" ;;
             *)             echo "Unknown status '$NEW_STATUS' — skipping"; exit 0 ;;
           esac
+          if [[ -z "$OPT" ]]; then
+            echo "'$NEW_STATUS' has no option ID registered for '$FULL_REPO' — skipping"
+            exit 0
+          fi
 
           NODE_ID=$(gh api repos/"$FULL_REPO"/issues/"$NUMBER" --jq '.node_id')
 
@@ -58,7 +85,7 @@ jobs:
               addProjectV2ItemById(input: { projectId: $proj, contentId: $content }) {
                 item { id }
               }
-            }' -f proj="PVT_kwDODmqj9M4Be0uq" -f content="$NODE_ID" \
+            }' -f proj="$PROJECT_ID" -f content="$NODE_ID" \
             --jq '.data.addProjectV2ItemById.item.id')
 
           gh api graphql -f query='
@@ -67,5 +94,5 @@ jobs:
                 projectId: $proj, itemId: $item,
                 fieldId: $field, value: { singleSelectOptionId: $opt }
               }) { projectV2Item { id } }
-            }' -f proj="PVT_kwDODmqj9M4Be0uq" -f item="$ITEM_ID" \
-            -f field="PVTSSF_lADODmqj9M4Be0uqzhZMFd8" -f opt="$OPT"
+            }' -f proj="$PROJECT_ID" -f item="$ITEM_ID" \
+            -f field="$FIELD_ID" -f opt="$OPT"
