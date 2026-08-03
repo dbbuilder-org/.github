@@ -13,7 +13,8 @@
 # Args: QUERY  VARS_JSON (a JSON object string, e.g. '{"url":"..."}')
 # Requires env var: LINEAR_API_KEY
 linear_api() {
-  local query="$1" vars="${2:-{}}"
+  local query="$1" vars="$2"
+  [[ -z "$vars" ]] && vars='{}'
   local body
   body=$(jq -n --arg q "$query" --argjson v "$vars" '{query: $q, variables: $v}')
   curl -s https://api.linear.app/graphql \
