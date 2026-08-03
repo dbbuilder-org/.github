@@ -1,0 +1,159 @@
+name: Linear Status Sync (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      # ── Linear team workflow-state IDs ────────────────────────────────────
+      STATE_TODO:
+        required: true
+        type: string
+      STATE_BLOCKED:
+        required: true
+        type: string
+      STATE_IN_REVIEW:
+        required: true
+        type: string
+      STATE_DONE:
+        required: true
+        type: string
+      STATE_CANCELED:
+        required: true
+        type: string
+      STATE_DUPLICATE:
+        required: true
+        type: string
+      BLOCKING_LABELS:
+        required: false
+        type: string
+        default: 'Condition:Needs-Decision,Condition:Changes-Requested,Condition:Stacked'
+      DUPLICATE_LABEL:
+        required: false
+        type: string
+        default: 'Condition:Duplicate'
+      # ── Caller context ────────────────────────────────────────────────────
+      event_name:
+        required: true
+        type: string
+      repo:
+        required: true
+        type: string
+      action:
+        required: false
+        type: string
+        default: ''
+      item_number:
+        required: false
+        type: string
+        default: ''
+      html_url:
+        required: false
+        type: string
+        default: ''
+      state_reason:
+        required: false
+        type: string
+        default: ''
+      merged:
+        required: false
+        type: string
+        default: ''
+    secrets:
+      linear_api_key:
+        required: true
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+
+  # ── issues: closed ────────────────────────────────────────────────────────
+  issue-closed:
+    if: inputs.event_name == 'issues' && inputs.action == 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dbbuilder-org/.github/.github/actions/write-linear-helpers@main
+      - env:
+          LINEAR_API_KEY: ${{ secrets.linear_api_key }}
+          HTML_URL: ${{ inputs.html_url }}
+          STATE_DONE: ${{ inputs.STATE_DONE }}
+          STATE_CANCELED: ${{ inputs.STATE_CANCELED }}
+          STATE_REASON: ${{ inputs.state_reason }}
+        run: |
+          source /tmp/linear-helpers.sh
+          if [[ "$STATE_REASON" == "not_planned" ]]; then
+            sync_linear_status "$HTML_URL" "$STATE_CANCELED"
+          else
+            sync_linear_status "$HTML_URL" "$STATE_DONE"
+          fi
+
+  # ── issues: reopened ──────────────────────────────────────────────────────
+  issue-reopened:
+    if: inputs.event_name == 'issues' && inputs.action == 'reopened'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dbbuilder-org/.github/.github/actions/write-linear-helpers@main
+      - env:
+          LINEAR_API_KEY: ${{ secrets.linear_api_key }}
+          HTML_URL: ${{ inputs.html_url }}
+          STATE_TODO: ${{ inputs.STATE_TODO }}
+        run: |
+          source /tmp/linear-helpers.sh
+          sync_linear_status "$HTML_URL" "$STATE_TODO"
+
+  # ── issues: labeled / unlabeled ───────────────────────────────────────────
+  issue-label-changed:
+    if: inputs.event_name == 'issues' && (inputs.action == 'labeled' || inputs.action == 'unlabeled')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dbbuilder-org/.github/.github/actions/write-linear-helpers@main
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          LINEAR_API_KEY: ${{ secrets.linear_api_key }}
+          HTML_URL: ${{ inputs.html_url }}
+          REPO: ${{ inputs.repo }}
+          NUMBER: ${{ inputs.item_number }}
+          BLOCKING_LABELS: ${{ inputs.BLOCKING_LABELS }}
+          DUPLICATE_LABEL: ${{ inputs.DUPLICATE_LABEL }}
+          STATE_BLOCKED: ${{ inputs.STATE_BLOCKED }}
+          STATE_DUPLICATE: ${{ inputs.STATE_DUPLICATE }}
+          STATE_TODO: ${{ inputs.STATE_TODO }}
+        run: |
+          source /tmp/linear-helpers.sh
+          OVERRIDE=$(label_override_state "$REPO" "$NUMBER")
+          sync_linear_status "$HTML_URL" "${OVERRIDE:-$STATE_TODO}"
+
+  # ── pull_request_target: opened ──────────────────────────────────────────
+  pr-opened:
+    if: inputs.event_name == 'pull_request_target' && inputs.action == 'opened'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dbbuilder-org/.github/.github/actions/write-linear-helpers@main
+      - env:
+          LINEAR_API_KEY: ${{ secrets.linear_api_key }}
+          HTML_URL: ${{ inputs.html_url }}
+          STATE_IN_REVIEW: ${{ inputs.STATE_IN_REVIEW }}
+        run: |
+          source /tmp/linear-helpers.sh
+          sync_linear_status "$HTML_URL" "$STATE_IN_REVIEW"
+
+  # ── pull_request_target: closed (merged or not) ──────────────────────────
+  pr-closed:
+    if: inputs.event_name == 'pull_request_target' && inputs.action == 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dbbuilder-org/.github/.github/actions/write-linear-helpers@main
+      - env:
+          LINEAR_API_KEY: ${{ secrets.linear_api_key }}
+          HTML_URL: ${{ inputs.html_url }}
+          STATE_DONE: ${{ inputs.STATE_DONE }}
+          STATE_CANCELED: ${{ inputs.STATE_CANCELED }}
+          MERGED: ${{ inputs.merged }}
+        run: |
+          source /tmp/linear-helpers.sh
+          if [[ "$MERGED" == "true" ]]; then
+            sync_linear_status "$HTML_URL" "$STATE_DONE"
+          else
+            sync_linear_status "$HTML_URL" "$STATE_CANCELED"
+          fi
