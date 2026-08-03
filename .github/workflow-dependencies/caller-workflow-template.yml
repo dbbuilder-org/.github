@@ -2,7 +2,7 @@ name: Sync Status to Linear
 
 on:
   issues:
-    types: [closed, reopened, labeled, unlabeled]
+    types: [closed, reopened, labeled, unlabeled, field_added, field_removed]
   pull_request_target:
     types: [opened, closed]
 
@@ -28,5 +28,7 @@ jobs:
       html_url: ${{ github.event.issue.html_url || github.event.pull_request.html_url }}
       state_reason: ${{ github.event.issue.state_reason }}
       merged: ${{ github.event.pull_request.merged }}
+      field_name: ${{ github.event.issue_field.name }}
+      field_value: ${{ github.event.issue_field_value.option.name }}
     secrets:
       linear_api_key: ${{ secrets.LINEAR_API_KEY }}

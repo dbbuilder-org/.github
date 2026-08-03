@@ -82,6 +82,54 @@ sync_linear_status() {
   echo "sync_linear_status: $(jq -r '.data.issueUpdate.issue.identifier' <<< "$result") -> $(jq -r '.data.issueUpdate.issue.state.name' <<< "$result")"
 }
 
+# Look up the Linear issue linked to HTML_URL and set its priority (an
+# integer 0-4: 0=No priority, 1=Urgent, 2=High, 3=Medium, 4=Low). No-ops when
+# the item isn't linked, or is already at PRIORITY — same load-bearing
+# no-op guard as sync_linear_status, for the same feedback-loop reason.
+# Args: HTML_URL  PRIORITY
+sync_linear_priority() {
+  local html_url="$1" priority="$2"
+
+  local result issue_id current_priority
+  result=$(linear_api \
+    'query($url: String!) { attachmentsForURL(url: $url) { nodes { issue { id priority } } } }' \
+    "$(jq -n --arg url "$html_url" '{url: $url}')")
+  issue_id=$(jq -r '.data.attachmentsForURL.nodes[0].issue.id // empty' <<< "$result")
+  if [[ -z "$issue_id" ]]; then
+    echo "sync_linear_priority: $html_url has no linked Linear issue — skipping"
+    return 0
+  fi
+  current_priority=$(jq -r '.data.attachmentsForURL.nodes[0].issue.priority' <<< "$result")
+  if [[ "$current_priority" == "$priority" ]]; then
+    echo "sync_linear_priority: $issue_id already at priority $priority — skipping"
+    return 0
+  fi
+
+  local update
+  update=$(linear_api \
+    'mutation($id: String!, $priority: Float!) { issueUpdate(id: $id, input: { priority: $priority }) { success issue { identifier priority } } }' \
+    "$(jq -n --arg id "$issue_id" --argjson priority "$priority" '{id: $id, priority: $priority}')")
+  if [[ "$(jq -r '.data.issueUpdate.success // false' <<< "$update")" != "true" ]]; then
+    echo "sync_linear_priority: failed to update $issue_id: $update" >&2
+    return 1
+  fi
+  echo "sync_linear_priority: $(jq -r '.data.issueUpdate.issue.identifier' <<< "$update") -> priority $(jq -r '.data.issueUpdate.issue.priority' <<< "$update")"
+}
+
+# Map a GitHub "Priority" Issue Field option name to a Linear priority
+# integer. Empty NAME (field cleared) maps to 0 (No priority).
+# Args: OPTION_NAME
+priority_name_to_linear_priority() {
+  case "$1" in
+    Urgent) echo 1 ;;
+    High)   echo 2 ;;
+    Medium) echo 3 ;;
+    Low)    echo 4 ;;
+    "")     echo 0 ;;
+    *)      echo "" ;;
+  esac
+}
+
 # Decide the Blocked/Duplicate override state for an issue/PR from its
 # current GitHub labels. Prints nothing if no override label is present,
 # meaning the caller should fall back to its own default state.

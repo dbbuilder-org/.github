@@ -8,7 +8,10 @@
  *                       GitHub App. Forwards board drags as `project_drag`
  *                       for project-drag.yml.
  *  POST /linear-webhook — Issue webhooks from Linear. Forwards state changes
- *                       as `linear_status_change` for linear-drag.yml.
+ *                       as `linear_status_change` for linear-drag.yml, and
+ *                       priority changes as `linear_priority_change` for
+ *                       linear-priority-drag.yml (independently — either or
+ *                       both can fire from the same delivery).
  *
  * Required environment variables (set as Worker secrets in Cloudflare dashboard):
  *   WEBHOOK_SECRET        — secret configured on the GitHub App webhook
@@ -133,14 +136,16 @@ async function handleLinearWebhook(request, env) {
   if (payload.type !== 'Issue' || payload.action !== 'update') {
     return new Response('Ignored: not an Issue update', { status: 200 });
   }
-  if (!payload.updatedFrom || !('stateId' in payload.updatedFrom)) {
-    return new Response('Ignored: state did not change', { status: 200 });
+
+  const stateChanged = !!payload.updatedFrom && 'stateId' in payload.updatedFrom;
+  const priorityChanged = !!payload.updatedFrom && 'priority' in payload.updatedFrom;
+  if (!stateChanged && !priorityChanged) {
+    return new Response('Ignored: no relevant field changed', { status: 200 });
   }
 
   const issueId = payload.data?.id;
-  const newStatus = payload.data?.state?.name;
-  if (!issueId || !newStatus) {
-    return new Response('Ignored: missing issue id/state', { status: 200 });
+  if (!issueId) {
+    return new Response('Ignored: missing issue id', { status: 200 });
   }
 
   // ── Resolve the linked GitHub issue via Linear's own attachment data ──────
@@ -168,17 +173,30 @@ async function handleLinearWebhook(request, env) {
   }
   const [, owner, repo, number] = match;
 
-  // ── Forward as repository_dispatch ────────────────────────────────────────
+  // ── Forward whichever changed as repository_dispatch(es) ─────────────────
   const token = await getInstallationToken(env.APP_ID, env.APP_PRIVATE_KEY, env.INSTALLATION_ID);
-  const resp = await dispatch(token, 'linear_status_change', {
-    owner,
-    repo,
-    issue_number: Number(number),
-    new_status: newStatus,
-  });
+  const results = [];
 
-  if (!resp.ok) {
-    const text = await resp.text();
+  if (stateChanged && payload.data?.state?.name) {
+    results.push(await dispatch(token, 'linear_status_change', {
+      owner,
+      repo,
+      issue_number: Number(number),
+      new_status: payload.data.state.name,
+    }));
+  }
+  if (priorityChanged && payload.data?.priority !== undefined && payload.data?.priority !== null) {
+    results.push(await dispatch(token, 'linear_priority_change', {
+      owner,
+      repo,
+      issue_number: Number(number),
+      new_priority: payload.data.priority,
+    }));
+  }
+
+  const failed = results.find((r) => !r.ok);
+  if (failed) {
+    const text = await failed.text();
     return new Response(`Dispatch failed: ${text}`, { status: 500 });
   }
 

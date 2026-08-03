@@ -66,6 +66,14 @@ on:
         required: false
         type: string
         default: ''
+      field_name:
+        required: false
+        type: string
+        default: ''
+      field_value:
+        required: false
+        type: string
+        default: ''
       # ── repository_dispatch drag data ─────────────────────────────────────
       content_node_id:
         required: false
@@ -149,6 +157,36 @@ jobs:
           source /tmp/linear-helpers.sh
           OVERRIDE=$(label_override_state "$REPO" "$NUMBER")
           sync_linear_status "$HTML_URL" "${OVERRIDE:-$STATE_TODO}"
+
+  # ── issues: field_added / field_removed on the "Priority" Issue Field ────
+  issue-priority-changed:
+    if: >
+      inputs.event_name == 'issues' &&
+      (inputs.action == 'field_added' || inputs.action == 'field_removed') &&
+      inputs.field_name == 'Priority'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dbbuilder-org/.github/.github/actions/write-linear-helpers@main
+      - env:
+          LINEAR_API_KEY: ${{ secrets.linear_api_key }}
+          HTML_URL: ${{ inputs.html_url }}
+          ACTION: ${{ inputs.action }}
+          FIELD_VALUE: ${{ inputs.field_value }}
+        run: |
+          source /tmp/linear-helpers.sh
+          # field_removed's payload still carries the OLD option name (GitHub
+          # doesn't send an empty value for a cleared field) — action, not
+          # field_value, is the only reliable signal that it was cleared.
+          if [[ "$ACTION" == "field_removed" ]]; then
+            PRIORITY=0
+          else
+            PRIORITY=$(priority_name_to_linear_priority "$FIELD_VALUE")
+            if [[ -z "$PRIORITY" ]]; then
+              echo "Unknown Priority value '$FIELD_VALUE' — skipping"
+              exit 0
+            fi
+          fi
+          sync_linear_priority "$HTML_URL" "$PRIORITY"
 
   # ── pull_request_target: opened ──────────────────────────────────────────
   pr-opened:

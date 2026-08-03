@@ -1,0 +1,68 @@
+name: Linear Priority -> GitHub Issue Field
+
+on:
+  repository_dispatch:
+    types: [linear_priority_change]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  # Mirrors a Linear issue's priority onto the linked GitHub issue's native
+  # "Priority" Issue Field. Unlike the Status/Issue-Boards sync, this needs
+  # no per-repo registration: GitHub Issue Fields are defined once at the
+  # dbbuilder-org level and apply to every repo the same way.
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.WORKFLOW_APP_ID }}
+          private-key: ${{ secrets.WORKFLOW_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+      - env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          OWNER: ${{ github.event.client_payload.owner }}
+          REPO: ${{ github.event.client_payload.repo }}
+          NUMBER: ${{ github.event.client_payload.issue_number }}
+          NEW_PRIORITY: ${{ github.event.client_payload.new_priority }}
+        run: |
+          set -e
+          FULL_REPO="$OWNER/$REPO"
+
+          # dbbuilder-org's "Priority" Issue Field — same IDs for every repo.
+          FIELD_ID="IFSS_kgDOAju85g"
+          case "$NEW_PRIORITY" in
+            1) OPT_NUM=65565356; OPT_NODE="IFSSO_kgDOA-hyrA" ;;  # Urgent
+            2) OPT_NUM=65565357; OPT_NODE="IFSSO_kgDOA-hyrQ" ;;  # High
+            3) OPT_NUM=65565358; OPT_NODE="IFSSO_kgDOA-hyrg" ;;  # Medium
+            4) OPT_NUM=65565359; OPT_NODE="IFSSO_kgDOA-hyrw" ;;  # Low
+            0) OPT_NUM=""; OPT_NODE="" ;;                        # No priority -> clear
+            *) echo "Unknown priority '$NEW_PRIORITY' — skipping"; exit 0 ;;
+          esac
+
+          # Load-bearing, not just an optimization — same feedback-loop reason
+          # as linear-drag.yml's Status write: skip if already at this value.
+          CURRENT_NUM=$(gh api repos/"$FULL_REPO"/issues/"$NUMBER" \
+            --jq '.issue_field_values[]? | select(.issue_field_name == "Priority") | .single_select_option.id // empty')
+
+          if [[ "$CURRENT_NUM" == "$OPT_NUM" ]]; then
+            echo "Priority already '$NEW_PRIORITY' — skipping"
+            exit 0
+          fi
+
+          NODE_ID=$(gh api repos/"$FULL_REPO"/issues/"$NUMBER" --jq '.node_id')
+
+          if [[ -z "$OPT_NODE" ]]; then
+            jq -n --arg id "$NODE_ID" --arg fieldId "$FIELD_ID" '{
+              query: "mutation($input: SetIssueFieldValueInput!) { setIssueFieldValue(input: $input) { issue { id } } }",
+              variables: { input: { issueId: $id, issueFields: [{ fieldId: $fieldId, delete: true }] } }
+            }' | gh api graphql --input -
+          else
+            jq -n --arg id "$NODE_ID" --arg fieldId "$FIELD_ID" --arg optId "$OPT_NODE" '{
+              query: "mutation($input: SetIssueFieldValueInput!) { setIssueFieldValue(input: $input) { issue { id } } }",
+              variables: { input: { issueId: $id, issueFields: [{ fieldId: $fieldId, singleSelectOptionId: $optId }] } }
+            }' | gh api graphql --input -
+          fi
