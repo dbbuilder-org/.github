@@ -78,6 +78,14 @@ on:
     secrets:
       linear_api_key:
         required: true
+      # Only needed by the repository_dispatch (project-drag) path below,
+      # which runs in dbbuilder-org/.github and needs cross-repo access to
+      # resolve the dragged item's node ID — github.token is repo-scoped and
+      # can't see other (especially private) repos.
+      app_id:
+        required: false
+      app_private_key:
+        required: false
 
 permissions:
   contents: read
@@ -182,8 +190,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: dbbuilder-org/.github/.github/actions/write-linear-helpers@main
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.app_id }}
+          private-key: ${{ secrets.app_private_key }}
       - env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           LINEAR_API_KEY: ${{ secrets.linear_api_key }}
           CONTENT_NODE_ID: ${{ inputs.content_node_id }}
           NEW_STATUS: ${{ inputs.new_status }}
