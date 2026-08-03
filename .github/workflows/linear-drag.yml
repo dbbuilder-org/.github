@@ -13,11 +13,12 @@ jobs:
   # Status field on that repo's "Issue Boards" project. Linear's own GitHub
   # integration already handles open <-> closed (Done maps to a closed issue
   # automatically); this covers every other state, which has no native
-  # equivalent. "Duplicate" has no matching Status column on any board, so
-  # it becomes a label instead.
+  # equivalent. "Duplicate" has no matching Status column on any board (and
+  # can't be removed from Linear's own state list), so it becomes a
+  # Condition:Duplicate label plus the Canceled status.
   #
   # To onboard another repo, add a case arm below with its project/field/
-  # option IDs (deploy/New-LinearStatusSync.ps1 does this automatically).
+  # option IDs (onboard-linear-status-sync.yml does this automatically).
   sync:
     runs-on: ubuntu-latest
     steps:
@@ -59,7 +60,7 @@ jobs:
           if [[ "$NEW_STATUS" == "Duplicate" ]]; then
             gh api repos/"$FULL_REPO"/labels -f name="Condition:Duplicate" -f color="cfd3d7" >/dev/null 2>&1 || true
             gh api repos/"$FULL_REPO"/issues/"$NUMBER"/labels -f "labels[]=Condition:Duplicate"
-            exit 0
+            NEW_STATUS="Canceled"
           fi
 
           # ── Status name -> that repo's option ID ─────────────────────────
