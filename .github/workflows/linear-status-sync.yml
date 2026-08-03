@@ -4,9 +4,17 @@ on:
   workflow_call:
     inputs:
       # ── Linear team workflow-state IDs ────────────────────────────────────
+      STATE_BACKLOG:
+        required: false
+        type: string
+        default: ''
       STATE_TODO:
         required: true
         type: string
+      STATE_IN_PROGRESS:
+        required: false
+        type: string
+        default: ''
       STATE_BLOCKED:
         required: true
         type: string
@@ -35,8 +43,9 @@ on:
         required: true
         type: string
       repo:
-        required: true
+        required: false
         type: string
+        default: ''
       action:
         required: false
         type: string
@@ -54,6 +63,15 @@ on:
         type: string
         default: ''
       merged:
+        required: false
+        type: string
+        default: ''
+      # ── repository_dispatch drag data ─────────────────────────────────────
+      content_node_id:
+        required: false
+        type: string
+        default: ''
+      new_status:
         required: false
         type: string
         default: ''
@@ -157,3 +175,27 @@ jobs:
           else
             sync_linear_status "$HTML_URL" "$STATE_CANCELED"
           fi
+
+  # ── repository_dispatch: item dragged on a GitHub Projects board ─────────
+  project-dragged:
+    if: inputs.event_name == 'repository_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dbbuilder-org/.github/.github/actions/write-linear-helpers@main
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          LINEAR_API_KEY: ${{ secrets.linear_api_key }}
+          CONTENT_NODE_ID: ${{ inputs.content_node_id }}
+          NEW_STATUS: ${{ inputs.new_status }}
+          STATE_BACKLOG: ${{ inputs.STATE_BACKLOG }}
+          STATE_TODO: ${{ inputs.STATE_TODO }}
+          STATE_IN_PROGRESS: ${{ inputs.STATE_IN_PROGRESS }}
+          STATE_BLOCKED: ${{ inputs.STATE_BLOCKED }}
+          STATE_IN_REVIEW: ${{ inputs.STATE_IN_REVIEW }}
+          STATE_DONE: ${{ inputs.STATE_DONE }}
+          STATE_CANCELED: ${{ inputs.STATE_CANCELED }}
+        run: |
+          source /tmp/linear-helpers.sh
+          HTML_URL=$(resolve_html_url "$CONTENT_NODE_ID")
+          TARGET_STATE=$(status_name_to_state_id "$NEW_STATUS")
+          sync_linear_status "$HTML_URL" "$TARGET_STATE"

@@ -52,8 +52,9 @@ export default {
     if (payload.action !== 'edited') {
       return new Response('Ignored: not an edited action', { status: 200 });
     }
-    if (payload.projects_v2_item?.content_type !== 'PullRequest') {
-      return new Response('Ignored: not a PullRequest item', { status: 200 });
+    const contentType = payload.projects_v2_item?.content_type;
+    if (contentType !== 'PullRequest' && contentType !== 'Issue') {
+      return new Response('Ignored: not a PullRequest or Issue item', { status: 200 });
     }
 
     const fieldChange = payload.changes?.field_value;
@@ -74,6 +75,7 @@ export default {
           event_type: 'project_drag',
           client_payload: {
             content_node_id: payload.projects_v2_item.content_node_id,
+            content_type:    contentType,
             item_node_id:    payload.projects_v2_item.node_id,
             field_node_id:   fieldChange.field_node_id,
             from_status:     fieldChange.from?.name ?? '',

@@ -35,3 +35,23 @@ jobs:
     secrets:
       app_id: ${{ secrets.WORKFLOW_APP_ID }}
       app_private_key: ${{ secrets.WORKFLOW_APP_PRIVATE_KEY }}
+
+  # Routes a drag on the "Issue Boards" project's Status field to Linear,
+  # moving the linked SV1 issue to the matching workflow state.
+  handle-drag-issue-boards:
+    if: github.event.client_payload.field_node_id == 'PVTSSF_lADODmqj9M4Be0uqzhZMFd8'
+    uses: dbbuilder-org/.github/.github/workflows/linear-status-sync.yml@main
+    with:
+      STATE_BACKLOG: "097f9470-bd8f-4ab1-85a8-43ddb9210e59"
+      STATE_TODO: "a35a5b67-d6a5-4bd7-af31-854394244835"
+      STATE_IN_PROGRESS: "deeb7a15-4cb7-4922-abbe-4447a0a3b79b"
+      STATE_BLOCKED: "ed5ca1c0-e8cd-49ca-98b1-9bb192bb5b46"
+      STATE_IN_REVIEW: "7032803e-c156-4e75-bb57-c555ac7e4d0b"
+      STATE_DONE: "5771dd1e-3c8c-4087-879a-fdb2e26b8ecc"
+      STATE_CANCELED: "926750a6-c029-449c-a6f1-ac7ee4185e67"
+      STATE_DUPLICATE: "89300b73-42ff-4819-abd1-25b053043022"
+      event_name: repository_dispatch
+      content_node_id: ${{ github.event.client_payload.content_node_id }}
+      new_status: ${{ github.event.client_payload.to_status }}
+    secrets:
+      linear_api_key: ${{ secrets.LINEAR_APP }}

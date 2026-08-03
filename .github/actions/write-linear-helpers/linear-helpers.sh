@@ -2,6 +2,12 @@
 # Shared Linear helper functions for linear-status-sync workflows.
 # Source this file; do not execute it directly.
 # Converted to LF line endings.
+#
+# shellcheck disable=SC2016
+# This file is single-quoted `query='...'`/`-f query='...'` GraphQL literals
+# throughout. Those `$name` tokens are GraphQL variables (passed separately
+# via jq/-f), not bash variables — double-quoting would make bash expand them
+# and corrupt the query text, so the single quotes are intentional.
 
 # Call the Linear GraphQL API.
 # Args: QUERY  VARS_JSON (a JSON object string, e.g. '{"url":"..."}')
@@ -89,4 +95,37 @@ label_override_state() {
       return
     fi
   done
+}
+
+# Resolve a GitHub Issue/PR node ID (as sent in a projects_v2_item webhook)
+# to its html_url.
+# Args: CONTENT_NODE_ID
+# Requires env var: GH_TOKEN
+resolve_html_url() {
+  local content_node_id="$1"
+  gh api graphql -f query='
+    query($id: ID!) {
+      node(id: $id) {
+        ... on Issue { url }
+        ... on PullRequest { url }
+      }
+    }' -f id="$content_node_id" \
+    --jq '.data.node.url'
+}
+
+# Map a GitHub Projects "Status" option name to a Linear state ID.
+# Args: STATUS_NAME
+# Requires env vars: STATE_BACKLOG, STATE_TODO, STATE_IN_PROGRESS,
+#                     STATE_BLOCKED, STATE_IN_REVIEW, STATE_DONE, STATE_CANCELED
+status_name_to_state_id() {
+  case "$1" in
+    Backlog)       echo "$STATE_BACKLOG" ;;
+    Todo)          echo "$STATE_TODO" ;;
+    "In Progress") echo "$STATE_IN_PROGRESS" ;;
+    Blocked)       echo "$STATE_BLOCKED" ;;
+    "In Review")   echo "$STATE_IN_REVIEW" ;;
+    Done)          echo "$STATE_DONE" ;;
+    Canceled)      echo "$STATE_CANCELED" ;;
+    *)             echo "" ;;
+  esac
 }
