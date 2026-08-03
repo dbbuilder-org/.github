@@ -1,0 +1,71 @@
+name: Linear Status -> Issue Boards
+
+on:
+  repository_dispatch:
+    types: [linear_status_change]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  # Mirrors a Linear issue's workflow-state change onto the linked item's
+  # Status field on the "Issue Boards" project (dbbuilder-org/projects/8).
+  # Linear's own GitHub integration already handles open <-> closed (Done
+  # maps to a closed issue automatically); this covers every other state,
+  # which has no native equivalent. "Duplicate" has no matching Status
+  # column, so it becomes a label instead.
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.WORKFLOW_APP_ID }}
+          private-key: ${{ secrets.WORKFLOW_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+      - env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          OWNER: ${{ github.event.client_payload.owner }}
+          REPO: ${{ github.event.client_payload.repo }}
+          NUMBER: ${{ github.event.client_payload.issue_number }}
+          NEW_STATUS: ${{ github.event.client_payload.new_status }}
+        run: |
+          set -e
+          FULL_REPO="$OWNER/$REPO"
+
+          if [[ "$NEW_STATUS" == "Duplicate" ]]; then
+            gh api repos/"$FULL_REPO"/labels -f name="Condition:Duplicate" -f color="cfd3d7" >/dev/null 2>&1 || true
+            gh api repos/"$FULL_REPO"/issues/"$NUMBER"/labels -f "labels[]=Condition:Duplicate"
+            exit 0
+          fi
+
+          case "$NEW_STATUS" in
+            Backlog)       OPT="cdbc5f91" ;;
+            Todo)          OPT="f75ad846" ;;
+            "In Progress") OPT="47fc9ee4" ;;
+            "In Review")   OPT="9c0c29a2" ;;
+            Blocked)       OPT="16765e6b" ;;
+            Done)          OPT="98236657" ;;
+            Canceled)      OPT="779953c4" ;;
+            *)             echo "Unknown status '$NEW_STATUS' — skipping"; exit 0 ;;
+          esac
+
+          NODE_ID=$(gh api repos/"$FULL_REPO"/issues/"$NUMBER" --jq '.node_id')
+
+          ITEM_ID=$(gh api graphql -f query='
+            mutation($proj: ID!, $content: ID!) {
+              addProjectV2ItemById(input: { projectId: $proj, contentId: $content }) {
+                item { id }
+              }
+            }' -f proj="PVT_kwDODmqj9M4Be0uq" -f content="$NODE_ID" \
+            --jq '.data.addProjectV2ItemById.item.id')
+
+          gh api graphql -f query='
+            mutation($proj: ID!, $item: ID!, $field: ID!, $opt: String!) {
+              updateProjectV2ItemFieldValue(input: {
+                projectId: $proj, itemId: $item,
+                fieldId: $field, value: { singleSelectOptionId: $opt }
+              }) { projectV2Item { id } }
+            }' -f proj="PVT_kwDODmqj9M4Be0uq" -f item="$ITEM_ID" \
+            -f field="PVTSSF_lADODmqj9M4Be0uqzhZMFd8" -f opt="$OPT"

@@ -1,16 +1,24 @@
 /**
- * Cloudflare Worker: GitHub Project Drag Forwarder
+ * Cloudflare Worker: GitHub <-> Linear status-sync forwarder
  *
- * Receives projects_v2_item webhook events from the DBBuilder Workflow GitHub App,
- * verifies the signature, generates a short-lived app token, and forwards drag
- * events as repository_dispatch to dbbuilder-org/.github so the project-drag.yml
- * workflow can handle them.
+ * Two independent routes, both ending in a repository_dispatch to
+ * dbbuilder-org/.github so a GitHub Actions workflow does the actual write:
+ *
+ *  POST /            — projects_v2_item webhooks from the DBBuilder Workflow
+ *                       GitHub App. Forwards board drags as `project_drag`
+ *                       for project-drag.yml.
+ *  POST /linear-webhook — Issue webhooks from Linear. Forwards state changes
+ *                       as `linear_status_change` for linear-drag.yml.
  *
  * Required environment variables (set as Worker secrets in Cloudflare dashboard):
- *   WEBHOOK_SECRET   — the secret configured on the GitHub App webhook
- *   APP_ID           — the numeric GitHub App ID
- *   APP_PRIVATE_KEY  — the full PEM private key for the GitHub App
- *   INSTALLATION_ID  — the installation ID for dbbuilder-org
+ *   WEBHOOK_SECRET        — secret configured on the GitHub App webhook
+ *   APP_ID                — the numeric GitHub App ID
+ *   APP_PRIVATE_KEY       — the full PEM private key for the GitHub App
+ *   INSTALLATION_ID        — the installation ID for dbbuilder-org
+ *
+ *   LINEAR_WEBHOOK_SECRET  — secret configured on the Linear webhook
+ *   LINEAR_API_KEY         — Linear API key, used to resolve an updated
+ *                            issue's linked GitHub URL via its attachments
  */
 
 export default {
@@ -19,81 +27,174 @@ export default {
       return new Response('Method Not Allowed', { status: 405 });
     }
 
-    const body = await request.text();
-
-    // ── Verify GitHub webhook signature ──────────────────────────────────────
-    const sigHeader = request.headers.get('X-Hub-Signature-256');
-    if (!sigHeader) {
-      return new Response('Unauthorized: missing signature', { status: 401 });
+    const { pathname } = new URL(request.url);
+    if (pathname === '/linear-webhook') {
+      return handleLinearWebhook(request, env);
     }
-
-    const encoder = new TextEncoder();
-    const hmacKey = await crypto.subtle.importKey(
-      'raw',
-      encoder.encode(env.WEBHOOK_SECRET),
-      { name: 'HMAC', hash: 'SHA-256' },
-      false,
-      ['verify']
-    );
-    const sigBytes = hexToBytes(sigHeader.replace('sha256=', ''));
-    const valid = await crypto.subtle.verify('HMAC', hmacKey, sigBytes, encoder.encode(body));
-    if (!valid) {
-      return new Response('Unauthorized: invalid signature', { status: 401 });
-    }
-
-    // ── Filter to relevant events ─────────────────────────────────────────────
-    const githubEvent = request.headers.get('X-Github-Event');
-    if (githubEvent !== 'projects_v2_item') {
-      return new Response('Ignored: not a projects_v2_item event', { status: 200 });
-    }
-
-    const payload = JSON.parse(body);
-
-    if (payload.action !== 'edited') {
-      return new Response('Ignored: not an edited action', { status: 200 });
-    }
-    const contentType = payload.projects_v2_item?.content_type;
-    if (contentType !== 'PullRequest' && contentType !== 'Issue') {
-      return new Response('Ignored: not a PullRequest or Issue item', { status: 200 });
-    }
-
-    const fieldChange = payload.changes?.field_value;
-    if (!fieldChange || fieldChange.field_type !== 'single_select') {
-      return new Response('Ignored: no single_select field change', { status: 200 });
-    }
-
-    // ── Generate a short-lived GitHub App installation token ─────────────────
-    const token = await getInstallationToken(env.APP_ID, env.APP_PRIVATE_KEY, env.INSTALLATION_ID);
-
-    // ── Forward as repository_dispatch ───────────────────────────────────────
-    const resp = await fetch(
-      'https://api.github.com/repos/dbbuilder-org/.github/dispatches',
-      {
-        method: 'POST',
-        headers: githubHeaders(token, { 'Content-Type': 'application/json' }),
-        body: JSON.stringify({
-          event_type: 'project_drag',
-          client_payload: {
-            content_node_id: payload.projects_v2_item.content_node_id,
-            content_type:    contentType,
-            item_node_id:    payload.projects_v2_item.node_id,
-            field_node_id:   fieldChange.field_node_id,
-            from_status:     fieldChange.from?.name ?? '',
-            to_status:       fieldChange.to?.name ?? '',
-            sender:          payload.sender?.login ?? '',
-          },
-        }),
-      }
-    );
-
-    if (!resp.ok) {
-      const text = await resp.text();
-      return new Response(`Dispatch failed: ${text}`, { status: 500 });
-    }
-
-    return new Response('OK', { status: 200 });
+    return handleGithubWebhook(request, env);
   },
 };
+
+// ── GitHub Project drag -> project-drag.yml ───────────────────────────────────
+
+async function handleGithubWebhook(request, env) {
+  const body = await request.text();
+
+  // ── Verify GitHub webhook signature ──────────────────────────────────────
+  const sigHeader = request.headers.get('X-Hub-Signature-256');
+  if (!sigHeader) {
+    return new Response('Unauthorized: missing signature', { status: 401 });
+  }
+
+  const encoder = new TextEncoder();
+  const hmacKey = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(env.WEBHOOK_SECRET),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['verify']
+  );
+  const sigBytes = hexToBytes(sigHeader.replace('sha256=', ''));
+  const valid = await crypto.subtle.verify('HMAC', hmacKey, sigBytes, encoder.encode(body));
+  if (!valid) {
+    return new Response('Unauthorized: invalid signature', { status: 401 });
+  }
+
+  // ── Filter to relevant events ─────────────────────────────────────────────
+  const githubEvent = request.headers.get('X-Github-Event');
+  if (githubEvent !== 'projects_v2_item') {
+    return new Response('Ignored: not a projects_v2_item event', { status: 200 });
+  }
+
+  const payload = JSON.parse(body);
+
+  if (payload.action !== 'edited') {
+    return new Response('Ignored: not an edited action', { status: 200 });
+  }
+  const contentType = payload.projects_v2_item?.content_type;
+  if (contentType !== 'PullRequest' && contentType !== 'Issue') {
+    return new Response('Ignored: not a PullRequest or Issue item', { status: 200 });
+  }
+
+  const fieldChange = payload.changes?.field_value;
+  if (!fieldChange || fieldChange.field_type !== 'single_select') {
+    return new Response('Ignored: no single_select field change', { status: 200 });
+  }
+
+  // ── Generate a short-lived GitHub App installation token ─────────────────
+  const token = await getInstallationToken(env.APP_ID, env.APP_PRIVATE_KEY, env.INSTALLATION_ID);
+
+  // ── Forward as repository_dispatch ───────────────────────────────────────
+  const resp = await dispatch(token, 'project_drag', {
+    content_node_id: payload.projects_v2_item.content_node_id,
+    content_type:    contentType,
+    item_node_id:    payload.projects_v2_item.node_id,
+    field_node_id:   fieldChange.field_node_id,
+    from_status:     fieldChange.from?.name ?? '',
+    to_status:       fieldChange.to?.name ?? '',
+    sender:          payload.sender?.login ?? '',
+  });
+
+  if (!resp.ok) {
+    const text = await resp.text();
+    return new Response(`Dispatch failed: ${text}`, { status: 500 });
+  }
+
+  return new Response('OK', { status: 200 });
+}
+
+// ── Linear Issue state change -> linear-drag.yml ──────────────────────────────
+
+async function handleLinearWebhook(request, env) {
+  const body = await request.text();
+
+  // ── Verify Linear webhook signature ───────────────────────────────────────
+  const sigHeader = request.headers.get('Linear-Signature');
+  if (!sigHeader) {
+    return new Response('Unauthorized: missing signature', { status: 401 });
+  }
+
+  const encoder = new TextEncoder();
+  const hmacKey = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(env.LINEAR_WEBHOOK_SECRET),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['verify']
+  );
+  const sigBytes = hexToBytes(sigHeader);
+  const valid = await crypto.subtle.verify('HMAC', hmacKey, sigBytes, encoder.encode(body));
+  if (!valid) {
+    return new Response('Unauthorized: invalid signature', { status: 401 });
+  }
+
+  const payload = JSON.parse(body);
+
+  if (payload.type !== 'Issue' || payload.action !== 'update') {
+    return new Response('Ignored: not an Issue update', { status: 200 });
+  }
+  if (!payload.updatedFrom || !('stateId' in payload.updatedFrom)) {
+    return new Response('Ignored: state did not change', { status: 200 });
+  }
+
+  const issueId = payload.data?.id;
+  const newStatus = payload.data?.state?.name;
+  if (!issueId || !newStatus) {
+    return new Response('Ignored: missing issue id/state', { status: 200 });
+  }
+
+  // ── Resolve the linked GitHub issue via Linear's own attachment data ──────
+  const attachResp = await fetch('https://api.linear.app/graphql', {
+    method: 'POST',
+    headers: {
+      'Authorization': env.LINEAR_API_KEY,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      query: 'query($id: String!) { issue(id: $id) { attachments { nodes { url sourceType } } } }',
+      variables: { id: issueId },
+    }),
+  });
+  const attachData = await attachResp.json();
+  const githubUrl = attachData?.data?.issue?.attachments?.nodes
+    ?.find((a) => a.sourceType === 'github')?.url;
+  if (!githubUrl) {
+    return new Response('Ignored: no linked GitHub issue', { status: 200 });
+  }
+
+  const match = githubUrl.match(/github\.com\/([^/]+)\/([^/]+)\/issues\/(\d+)/);
+  if (!match) {
+    return new Response('Ignored: unrecognized GitHub URL shape', { status: 200 });
+  }
+  const [, owner, repo, number] = match;
+
+  // ── Forward as repository_dispatch ────────────────────────────────────────
+  const token = await getInstallationToken(env.APP_ID, env.APP_PRIVATE_KEY, env.INSTALLATION_ID);
+  const resp = await dispatch(token, 'linear_status_change', {
+    owner,
+    repo,
+    issue_number: Number(number),
+    new_status: newStatus,
+  });
+
+  if (!resp.ok) {
+    const text = await resp.text();
+    return new Response(`Dispatch failed: ${text}`, { status: 500 });
+  }
+
+  return new Response('OK', { status: 200 });
+}
+
+async function dispatch(token, eventType, clientPayload) {
+  return fetch(
+    'https://api.github.com/repos/dbbuilder-org/.github/dispatches',
+    {
+      method: 'POST',
+      headers: githubHeaders(token, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ event_type: eventType, client_payload: clientPayload }),
+    }
+  );
+}
 
 // ── GitHub App JWT + installation token ──────────────────────────────────────
 
