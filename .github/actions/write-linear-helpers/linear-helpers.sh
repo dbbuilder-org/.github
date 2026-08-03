@@ -107,7 +107,7 @@ sync_linear_priority() {
 
   local update
   update=$(linear_api \
-    'mutation($id: String!, $priority: Float!) { issueUpdate(id: $id, input: { priority: $priority }) { success issue { identifier priority } } }' \
+    'mutation($id: String!, $priority: Int!) { issueUpdate(id: $id, input: { priority: $priority }) { success issue { identifier priority } } }' \
     "$(jq -n --arg id "$issue_id" --argjson priority "$priority" '{id: $id, priority: $priority}')")
   if [[ "$(jq -r '.data.issueUpdate.success // false' <<< "$update")" != "true" ]]; then
     echo "sync_linear_priority: failed to update $issue_id: $update" >&2
