@@ -195,6 +195,7 @@ jobs:
         with:
           app-id: ${{ secrets.app_id }}
           private-key: ${{ secrets.app_private_key }}
+          owner: ${{ github.repository_owner }}
       - env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           LINEAR_API_KEY: ${{ secrets.linear_api_key }}
