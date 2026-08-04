@@ -20,4 +20,6 @@ jobs:
           echo "=== IssueRelationType enum ==="
           query '{ __type(name: "IssueRelationType") { enumValues { name } } }' | jq .
           echo "=== issueRelationDelete mutation args ==="
-          query '{ __schema { mutationType { fields(includeDeprecated: false) { name args { name type { name kind ofType { name kind } } } } } } }' | jq '.data.__schema.mutationType.fields[] | select(.name == "issueRelationDelete" or .name == "issueRelationCreate")'
+          query '{ __type(name: "Mutation") { fields(includeDeprecated: false) { name args { name type { name kind ofType { name kind } } } } } }' | jq '.data.__type.fields[] | select(.name == "issueRelationDelete")'
+          echo "=== issueUpdate parentId field (sanity check, already used elsewhere) ==="
+          query '{ __type(name: "IssueUpdateInput") { inputFields { name type { name kind } } } }' | jq '.data.__type.inputFields[] | select(.name == "parentId")'
