@@ -65,6 +65,14 @@ async function handleGithubWebhook(request, env) {
 
   // ── Filter to relevant events ─────────────────────────────────────────────
   const githubEvent = request.headers.get('X-Github-Event');
+
+  // TEMPORARY debug capture — remove once payload shapes are confirmed.
+  if (githubEvent === 'issue_dependencies' || githubEvent === 'sub_issues') {
+    const token = await getInstallationToken(env.APP_ID, env.APP_PRIVATE_KEY, env.INSTALLATION_ID);
+    await dispatch(token, 'debug_payload', { event: githubEvent, raw: body });
+    return new Response('OK (debug)', { status: 200 });
+  }
+
   if (githubEvent !== 'projects_v2_item') {
     return new Response('Ignored: not a projects_v2_item event', { status: 200 });
   }

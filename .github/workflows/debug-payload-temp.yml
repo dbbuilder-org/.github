@@ -1,0 +1,17 @@
+name: DEBUG payload capture (temporary)
+
+on:
+  repository_dispatch:
+    types: [debug_payload]
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dump
+        env:
+          EVENT: ${{ github.event.client_payload.event }}
+          RAW: ${{ github.event.client_payload.raw }}
+        run: |
+          echo "=== $EVENT ==="
+          echo "$RAW" | jq .
