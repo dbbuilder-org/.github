@@ -1,0 +1,21 @@
+name: DEBUG Linear filter introspect (temporary)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  introspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Introspect IssueFilter.team
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+        run: |
+          query() {
+            jq -n --arg q "$1" '{query: $q}' | curl -s https://api.linear.app/graphql \
+              -H "Authorization: $LINEAR_API_KEY" -H "Content-Type: application/json" -d @-
+          }
+          echo "=== IssueFilter.team ==="
+          query '{ __type(name: "IssueFilter") { inputFields { name } } }' | jq -r '.data.__type.inputFields[].name'
+          echo "=== TeamFilter fields ==="
+          query '{ __type(name: "NullableTeamFilter") { inputFields { name } } }' | jq .
