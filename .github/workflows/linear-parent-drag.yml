@@ -1,0 +1,36 @@
+name: Linear Parent -> GitHub Sub-Issue
+
+on:
+  repository_dispatch:
+    types: [linear_parent_change]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  # Mirrors a Linear issue's parentId change onto the linked GitHub issue's
+  # native sub-issue relation. Needs cross-repo access (this workflow runs in
+  # dbbuilder-org/.github but writes to whichever repo the linked issue is
+  # in), so it uses the org GitHub App the same way linear-drag.yml does.
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dbbuilder-org/.github/.github/actions/write-linear-helpers@main
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.WORKFLOW_APP_ID }}
+          private-key: ${{ secrets.WORKFLOW_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+      - env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          OWNER: ${{ github.event.client_payload.owner }}
+          REPO: ${{ github.event.client_payload.repo }}
+          NUMBER: ${{ github.event.client_payload.issue_number }}
+          PARENT_HTML_URL: ${{ github.event.client_payload.parent_html_url }}
+          ACTION: ${{ github.event.client_payload.action }}
+        run: |
+          source /tmp/linear-helpers.sh
+          SUB_HTML_URL="https://github.com/$OWNER/$REPO/issues/$NUMBER"
+          sync_github_sub_issue "$SUB_HTML_URL" "$PARENT_HTML_URL" "$ACTION"

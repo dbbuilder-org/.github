@@ -1,0 +1,27 @@
+name: GitHub Blocked-By -> Linear Relation
+
+on:
+  repository_dispatch:
+    types: [github_blocked_by_change]
+
+permissions:
+  contents: read
+
+jobs:
+  # Mirrors a GitHub native issue-dependency (blocked-by) change onto a
+  # matching Linear "blocks" relation between the two linked issues. Linear
+  # has no webhook resourceType for relation changes, so the reverse
+  # direction (Linear -> GitHub) can't be event-driven — see
+  # linear-relation-poll.yml for that leg instead.
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dbbuilder-org/.github/.github/actions/write-linear-helpers@main
+      - env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          BLOCKED_HTML_URL: ${{ github.event.client_payload.blocked_html_url }}
+          BLOCKING_HTML_URL: ${{ github.event.client_payload.blocking_html_url }}
+          ACTION: ${{ github.event.client_payload.action }}
+        run: |
+          source /tmp/linear-helpers.sh
+          sync_linear_blocks "$BLOCKING_HTML_URL" "$BLOCKED_HTML_URL" "$ACTION"

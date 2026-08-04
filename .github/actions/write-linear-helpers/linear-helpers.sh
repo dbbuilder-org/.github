@@ -116,6 +116,120 @@ sync_linear_priority() {
   echo "sync_linear_priority: $(jq -r '.data.issueUpdate.issue.identifier' <<< "$update") -> priority $(jq -r '.data.issueUpdate.issue.priority' <<< "$update")"
 }
 
+# Resolve a GitHub issue/PR URL to its linked Linear issue ID (a lighter
+# version of linear_lookup for callers that don't need current state).
+# Args: HTML_URL
+linear_issue_id() {
+  local html_url="$1"
+  linear_api \
+    'query($url: String!) { attachmentsForURL(url: $url) { nodes { issue { id } } } }' \
+    "$(jq -n --arg url "$html_url" '{url: $url}')" \
+    | jq -r '.data.attachmentsForURL.nodes[0].issue.id // empty'
+}
+
+# Create or remove a Linear "blocks" relation (BLOCKING_HTML_URL blocks
+# BLOCKED_HTML_URL) to mirror a GitHub issue-dependency change. No-ops when
+# either side isn't linked to Linear, or the relation is already in the
+# target state — same load-bearing feedback-loop guard as sync_linear_status.
+# Args: BLOCKING_HTML_URL  BLOCKED_HTML_URL  ACTION(add|remove)
+sync_linear_blocks() {
+  local blocking_url="$1" blocked_url="$2" action="$3"
+  local blocking_id blocked_id
+  blocking_id=$(linear_issue_id "$blocking_url")
+  blocked_id=$(linear_issue_id "$blocked_url")
+  if [[ -z "$blocking_id" || -z "$blocked_id" ]]; then
+    echo "sync_linear_blocks: one or both issues not linked to Linear — skipping"
+    return 0
+  fi
+
+  local existing_relation_id
+  existing_relation_id=$(linear_api \
+    'query($id: String!) { issue(id: $id) { relations { nodes { id type relatedIssue { id } } } } }' \
+    "$(jq -n --arg id "$blocking_id" '{id: $id}')" \
+    | jq -r --arg related "$blocked_id" '[.data.issue.relations.nodes[] | select(.type == "blocks" and .relatedIssue.id == $related)][0].id // empty')
+
+  local result
+  if [[ "$action" == "remove" ]]; then
+    if [[ -z "$existing_relation_id" ]]; then
+      echo "sync_linear_blocks: no existing relation to remove — skipping"
+      return 0
+    fi
+    result=$(linear_api \
+      'mutation($id: String!) { issueRelationDelete(id: $id) { success } }' \
+      "$(jq -n --arg id "$existing_relation_id" '{id: $id}')")
+    if [[ "$(jq -r '.data.issueRelationDelete.success // false' <<< "$result")" != "true" ]]; then
+      echo "sync_linear_blocks: failed to remove relation $existing_relation_id: $result" >&2
+      return 1
+    fi
+    echo "sync_linear_blocks: removed relation $existing_relation_id"
+    return 0
+  fi
+
+  if [[ -n "$existing_relation_id" ]]; then
+    echo "sync_linear_blocks: relation already exists — skipping"
+    return 0
+  fi
+  result=$(linear_api \
+    'mutation($issueId: String!, $relatedId: String!) { issueRelationCreate(input: { issueId: $issueId, relatedIssueId: $relatedId, type: blocks }) { success } }' \
+    "$(jq -n --arg issueId "$blocking_id" --arg relatedId "$blocked_id" '{issueId: $issueId, relatedId: $relatedId}')")
+  if [[ "$(jq -r '.data.issueRelationCreate.success // false' <<< "$result")" != "true" ]]; then
+    echo "sync_linear_blocks: failed to create relation: $result" >&2
+    return 1
+  fi
+  echo "sync_linear_blocks: created relation $blocking_id blocks $blocked_id"
+}
+
+# Set or clear a Linear issue's parent to mirror a GitHub sub-issue change.
+# No-ops when the sub-issue (or, for an add, the parent) isn't linked to
+# Linear, or it's already at the target parent — same load-bearing
+# feedback-loop guard as sync_linear_status.
+# Args: SUB_HTML_URL  PARENT_HTML_URL  ACTION(add|remove)
+sync_linear_parent() {
+  local sub_url="$1" parent_url="$2" action="$3"
+  local sub_id
+  sub_id=$(linear_issue_id "$sub_url")
+  if [[ -z "$sub_id" ]]; then
+    echo "sync_linear_parent: $sub_url not linked to Linear — skipping"
+    return 0
+  fi
+
+  local target_parent_id=""
+  if [[ "$action" == "add" ]]; then
+    target_parent_id=$(linear_issue_id "$parent_url")
+    if [[ -z "$target_parent_id" ]]; then
+      echo "sync_linear_parent: parent $parent_url not linked to Linear — skipping"
+      return 0
+    fi
+  fi
+
+  local current_parent_id
+  current_parent_id=$(linear_api \
+    'query($id: String!) { issue(id: $id) { parent { id } } }' \
+    "$(jq -n --arg id "$sub_id" '{id: $id}')" \
+    | jq -r '.data.issue.parent.id // empty')
+
+  if [[ "$current_parent_id" == "$target_parent_id" ]]; then
+    echo "sync_linear_parent: $sub_id already has target parent — skipping"
+    return 0
+  fi
+
+  local result
+  if [[ -z "$target_parent_id" ]]; then
+    result=$(linear_api \
+      'mutation($id: String!) { issueUpdate(id: $id, input: { parentId: null }) { success } }' \
+      "$(jq -n --arg id "$sub_id" '{id: $id}')")
+  else
+    result=$(linear_api \
+      'mutation($id: String!, $parentId: String!) { issueUpdate(id: $id, input: { parentId: $parentId }) { success } }' \
+      "$(jq -n --arg id "$sub_id" --arg parentId "$target_parent_id" '{id: $id, parentId: $parentId}')")
+  fi
+  if [[ "$(jq -r '.data.issueUpdate.success // false' <<< "$result")" != "true" ]]; then
+    echo "sync_linear_parent: failed to update $sub_id: $result" >&2
+    return 1
+  fi
+  echo "sync_linear_parent: $sub_id parent -> ${target_parent_id:-none}"
+}
+
 # Map a GitHub "Priority" Issue Field option name to a Linear priority
 # integer. Empty NAME (field cleared) maps to 0 (No priority).
 # Args: OPTION_NAME
@@ -169,6 +283,102 @@ resolve_html_url() {
       }
     }' -f id="$content_node_id" \
     --jq '.data.node.url'
+}
+
+# Resolve a GitHub issue/PR html_url to its GraphQL node ID.
+# Args: HTML_URL
+# Requires env var: GH_TOKEN
+resolve_node_id() {
+  local html_url="$1"
+  local owner repo number
+  owner=$(sed -E 's#https://github.com/([^/]+)/([^/]+)/(issues|pull)/([0-9]+).*#\1#' <<< "$html_url")
+  repo=$(sed -E 's#https://github.com/([^/]+)/([^/]+)/(issues|pull)/([0-9]+).*#\2#' <<< "$html_url")
+  number=$(sed -E 's#https://github.com/([^/]+)/([^/]+)/(issues|pull)/([0-9]+).*#\4#' <<< "$html_url")
+  gh api repos/"$owner"/"$repo"/issues/"$number" --jq '.node_id'
+}
+
+# Set or clear a GitHub issue's parent (native sub-issue relation) to mirror
+# a Linear parentId change. No-ops when it's already at the target parent —
+# same load-bearing feedback-loop guard as sync_linear_status.
+# Args: SUB_HTML_URL  PARENT_HTML_URL  ACTION(add|remove)
+# Requires env var: GH_TOKEN
+sync_github_sub_issue() {
+  local sub_html_url="$1" parent_html_url="$2" action="$3"
+  local sub_node parent_node
+  sub_node=$(resolve_node_id "$sub_html_url")
+  parent_node=$(resolve_node_id "$parent_html_url")
+  if [[ -z "$sub_node" || -z "$parent_node" ]]; then
+    echo "sync_github_sub_issue: could not resolve node IDs — skipping"
+    return 0
+  fi
+
+  local current_parent
+  current_parent=$(gh api graphql -f query='
+    query($id: ID!) { node(id: $id) { ... on Issue { parent { id } } } }' \
+    -f id="$sub_node" --jq '.data.node.parent.id // empty')
+
+  if [[ "$action" == "add" ]]; then
+    if [[ "$current_parent" == "$parent_node" ]]; then
+      echo "sync_github_sub_issue: already parented to $parent_node — skipping"
+      return 0
+    fi
+    jq -n --arg issueId "$parent_node" --arg subId "$sub_node" '{
+      query: "mutation($input: AddSubIssueInput!) { addSubIssue(input: $input) { subIssue { id } } }",
+      variables: { input: { issueId: $issueId, subIssueId: $subId, replaceParent: true } }
+    }' | gh api graphql --input -
+  else
+    if [[ "$current_parent" != "$parent_node" ]]; then
+      echo "sync_github_sub_issue: not currently parented to $parent_node — skipping"
+      return 0
+    fi
+    jq -n --arg issueId "$parent_node" --arg subId "$sub_node" '{
+      query: "mutation($input: RemoveSubIssueInput!) { removeSubIssue(input: $input) { subIssue { id } } }",
+      variables: { input: { issueId: $issueId, subIssueId: $subId } }
+    }' | gh api graphql --input -
+  fi
+}
+
+# Create or remove a GitHub issue-dependency (BLOCKING_HTML_URL blocks
+# BLOCKED_HTML_URL) to mirror a Linear "blocks" relation change. No-ops when
+# it's already in the target state — same load-bearing feedback-loop guard
+# as sync_linear_status.
+# Args: BLOCKED_HTML_URL  BLOCKING_HTML_URL  ACTION(add|remove)
+# Requires env var: GH_TOKEN
+sync_github_blocked_by() {
+  local blocked_html_url="$1" blocking_html_url="$2" action="$3"
+  local blocked_node blocking_node
+  blocked_node=$(resolve_node_id "$blocked_html_url")
+  blocking_node=$(resolve_node_id "$blocking_html_url")
+  if [[ -z "$blocked_node" || -z "$blocking_node" ]]; then
+    echo "sync_github_blocked_by: could not resolve node IDs — skipping"
+    return 0
+  fi
+
+  local already_blocked
+  already_blocked=$(gh api graphql -f query='
+    query($id: ID!) { node(id: $id) { ... on Issue { blockedBy(first: 100) { nodes { id } } } } }' \
+    -f id="$blocked_node" \
+    | jq -r --arg n "$blocking_node" '[.data.node.blockedBy.nodes[]?.id] | any(. == $n)')
+
+  if [[ "$action" == "add" ]]; then
+    if [[ "$already_blocked" == "true" ]]; then
+      echo "sync_github_blocked_by: already blocked — skipping"
+      return 0
+    fi
+    jq -n --arg issueId "$blocked_node" --arg blockingId "$blocking_node" '{
+      query: "mutation($input: AddBlockedByInput!) { addBlockedBy(input: $input) { issue { id } } }",
+      variables: { input: { issueId: $issueId, blockingIssueId: $blockingId } }
+    }' | gh api graphql --input -
+  else
+    if [[ "$already_blocked" != "true" ]]; then
+      echo "sync_github_blocked_by: not currently blocked — skipping"
+      return 0
+    fi
+    jq -n --arg issueId "$blocked_node" --arg blockingId "$blocking_node" '{
+      query: "mutation($input: RemoveBlockedByInput!) { removeBlockedBy(input: $input) { issue { id } } }",
+      variables: { input: { issueId: $issueId, blockingIssueId: $blockingId } }
+    }' | gh api graphql --input -
+  fi
 }
 
 # Map a GitHub Projects "Status" option name to a Linear state ID.

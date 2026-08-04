@@ -1,0 +1,103 @@
+name: Linear Blocked-By Poll -> GitHub
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Reconciles GitHub's native "blocked by" issue-dependency onto whatever
+  # "blocks" relations exist in Linear. This is the one sync leg in the whole
+  # system that can't be webhook-driven: Linear's webhook resourceType enum
+  # has no IssueRelation entry, so a relation created/removed directly in
+  # Linear.app never fires a webhook at all (confirmed 2026-08-03) — the
+  # GitHub -> Linear direction is still webhook-driven, see
+  # github-blocked-by-drag.yml.
+  #
+  # Scans every issue in each registered team, not just ones currently
+  # flagged as having a blocked-by relation — a relation that gets removed
+  # in Linear needs the same full scan to detect and remove the stale
+  # GitHub-side edge, and by the time that happens the issue itself may no
+  # longer be flagged either.
+  #
+  # To register another team, add its key to TEAM_KEYS below.
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dbbuilder-org/.github/.github/actions/write-linear-helpers@main
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.WORKFLOW_APP_ID }}
+          private-key: ${{ secrets.WORKFLOW_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+      - env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+        run: |
+          source /tmp/linear-helpers.sh
+
+          TEAM_KEYS="BB"
+
+          for TEAM_KEY in $TEAM_KEYS; do
+            AFTER="null"
+            while :; do
+              PAGE=$(linear_api \
+                'query($team: String!, $after: String) {
+                  issues(filter: { team: { key: { eq: $team } } }, first: 50, after: $after) {
+                    pageInfo { hasNextPage endCursor }
+                    nodes {
+                      identifier
+                      attachments { nodes { url sourceType } }
+                      inverseRelations {
+                        nodes {
+                          type
+                          issue { identifier attachments { nodes { url sourceType } } }
+                        }
+                      }
+                    }
+                  }
+                }' \
+                "$(jq -n --arg team "$TEAM_KEY" --argjson after "$AFTER" '{team: $team, after: $after}')")
+
+              echo "$PAGE" | jq -c '.data.issues.nodes[]' | while read -r NODE; do
+                SUBJECT_URL=$(jq -r '.attachments.nodes[] | select(.sourceType == "github") | .url' <<< "$NODE" | head -1)
+                if [[ -z "$SUBJECT_URL" ]]; then
+                  continue
+                fi
+
+                TARGET_URLS=$(jq -r '.inverseRelations.nodes[] | select(.type == "blocks") | .issue.attachments.nodes[] | select(.sourceType == "github") | .url' <<< "$NODE" | sort -u)
+
+                SUBJECT_NODE=$(resolve_node_id "$SUBJECT_URL")
+                if [[ -z "$SUBJECT_NODE" ]]; then
+                  echo "poll: could not resolve $SUBJECT_URL — skipping"
+                  continue
+                fi
+
+                CURRENT_URLS=$(gh api graphql -f query='
+                  query($id: ID!) { node(id: $id) { ... on Issue { blockedBy(first: 100) { nodes { url } } } } }' \
+                  -f id="$SUBJECT_NODE" --jq '.data.node.blockedBy.nodes[].url' | sort -u)
+
+                comm -23 <(echo "$TARGET_URLS") <(echo "$CURRENT_URLS") | while read -r ADD_URL; do
+                  [[ -z "$ADD_URL" ]] && continue
+                  echo "poll: $SUBJECT_URL blocked by $ADD_URL (adding on GitHub)"
+                  sync_github_blocked_by "$SUBJECT_URL" "$ADD_URL" add
+                done
+
+                comm -13 <(echo "$TARGET_URLS") <(echo "$CURRENT_URLS") | while read -r REMOVE_URL; do
+                  [[ -z "$REMOVE_URL" ]] && continue
+                  echo "poll: $SUBJECT_URL no longer blocked by $REMOVE_URL (removing on GitHub)"
+                  sync_github_blocked_by "$SUBJECT_URL" "$REMOVE_URL" remove
+                done
+              done
+
+              HAS_NEXT=$(jq -r '.data.issues.pageInfo.hasNextPage' <<< "$PAGE")
+              if [[ "$HAS_NEXT" != "true" ]]; then
+                break
+              fi
+              AFTER=$(jq -c '.data.issues.pageInfo.endCursor' <<< "$PAGE")
+            done
+          done

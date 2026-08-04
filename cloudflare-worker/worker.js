@@ -4,14 +4,27 @@
  * Two independent routes, both ending in a repository_dispatch to
  * dbbuilder-org/.github so a GitHub Actions workflow does the actual write:
  *
- *  POST /            — projects_v2_item webhooks from the DBBuilder Workflow
- *                       GitHub App. Forwards board drags as `project_drag`
- *                       for project-drag.yml.
+ *  POST /            — webhooks from the DBBuilder Workflow GitHub App:
+ *                       - projects_v2_item -> `project_drag` for project-drag.yml
+ *                       - issue_dependencies (blocked_by_added/removed only —
+ *                         GitHub also fires the redundant blocking_added/removed
+ *                         for the same edge, ignored here) -> `github_blocked_by_change`
+ *                         for linear-relation-sync.yml
+ *                       - sub_issues (sub_issue_added/removed only — same
+ *                         redundant-pair situation as above with
+ *                         parent_issue_added/removed) -> `github_sub_issue_change`
+ *                         for linear-relation-sync.yml
  *  POST /linear-webhook — Issue webhooks from Linear. Forwards state changes
- *                       as `linear_status_change` for linear-drag.yml, and
+ *                       as `linear_status_change` for linear-drag.yml,
  *                       priority changes as `linear_priority_change` for
- *                       linear-priority-drag.yml (independently — either or
- *                       both can fire from the same delivery).
+ *                       linear-priority-drag.yml, and parent/child changes as
+ *                       `linear_parent_change` for linear-relation-sync.yml —
+ *                       any subset can fire from the same delivery.
+ *
+ *                       Linear has no webhook resourceType for IssueRelation
+ *                       (blocks/blocked-by), so that direction can't be
+ *                       event-driven at all — see the scheduled polling job
+ *                       (linear-relation-poll.yml) instead.
  *
  * Required environment variables (set as Worker secrets in Cloudflare dashboard):
  *   WEBHOOK_SECRET        — secret configured on the GitHub App webhook
@@ -38,7 +51,7 @@ export default {
   },
 };
 
-// ── GitHub Project drag -> project-drag.yml ───────────────────────────────────
+// ── GitHub -> Linear ───────────────────────────────────────────────────────────
 
 async function handleGithubWebhook(request, env) {
   const body = await request.text();
@@ -63,22 +76,22 @@ async function handleGithubWebhook(request, env) {
     return new Response('Unauthorized: invalid signature', { status: 401 });
   }
 
-  // ── Filter to relevant events ─────────────────────────────────────────────
   const githubEvent = request.headers.get('X-Github-Event');
-
-  // TEMPORARY debug capture — remove once payload shapes are confirmed.
-  if (githubEvent === 'issue_dependencies' || githubEvent === 'sub_issues') {
-    const token = await getInstallationToken(env.APP_ID, env.APP_PRIVATE_KEY, env.INSTALLATION_ID);
-    await dispatch(token, 'debug_payload', { event: githubEvent, raw: body });
-    return new Response('OK (debug)', { status: 200 });
-  }
-
-  if (githubEvent !== 'projects_v2_item') {
-    return new Response('Ignored: not a projects_v2_item event', { status: 200 });
-  }
-
   const payload = JSON.parse(body);
 
+  if (githubEvent === 'issue_dependencies') {
+    return handleIssueDependencies(payload, env);
+  }
+  if (githubEvent === 'sub_issues') {
+    return handleSubIssues(payload, env);
+  }
+  if (githubEvent === 'projects_v2_item') {
+    return handleProjectsV2Item(payload, env);
+  }
+  return new Response('Ignored: unhandled event type', { status: 200 });
+}
+
+async function handleProjectsV2Item(payload, env) {
   if (payload.action !== 'edited') {
     return new Response('Ignored: not an edited action', { status: 200 });
   }
@@ -92,10 +105,7 @@ async function handleGithubWebhook(request, env) {
     return new Response('Ignored: no single_select field change', { status: 200 });
   }
 
-  // ── Generate a short-lived GitHub App installation token ─────────────────
   const token = await getInstallationToken(env.APP_ID, env.APP_PRIVATE_KEY, env.INSTALLATION_ID);
-
-  // ── Forward as repository_dispatch ───────────────────────────────────────
   const resp = await dispatch(token, 'project_drag', {
     content_node_id: payload.projects_v2_item.content_node_id,
     content_type:    contentType,
@@ -110,16 +120,72 @@ async function handleGithubWebhook(request, env) {
     const text = await resp.text();
     return new Response(`Dispatch failed: ${text}`, { status: 500 });
   }
-
   return new Response('OK', { status: 200 });
 }
 
-// ── Linear Issue state change -> linear-drag.yml ──────────────────────────────
+// GitHub fires both blocked_by_added/removed (on the blocked issue) and
+// blocking_added/removed (on the blocking issue) for the same edge, with
+// identical blocked_issue/blocking_issue data — only act on one pair.
+async function handleIssueDependencies(payload, env) {
+  let action;
+  if (payload.action === 'blocked_by_added') action = 'add';
+  else if (payload.action === 'blocked_by_removed') action = 'remove';
+  else return new Response('Ignored: redundant or unhandled action', { status: 200 });
+
+  const blockedUrl = payload.blocked_issue?.html_url;
+  const blockingUrl = payload.blocking_issue?.html_url;
+  if (!blockedUrl || !blockingUrl) {
+    return new Response('Ignored: missing issue URLs', { status: 200 });
+  }
+
+  const token = await getInstallationToken(env.APP_ID, env.APP_PRIVATE_KEY, env.INSTALLATION_ID);
+  const resp = await dispatch(token, 'github_blocked_by_change', {
+    blocked_html_url: blockedUrl,
+    blocking_html_url: blockingUrl,
+    action,
+  });
+
+  if (!resp.ok) {
+    const text = await resp.text();
+    return new Response(`Dispatch failed: ${text}`, { status: 500 });
+  }
+  return new Response('OK', { status: 200 });
+}
+
+// Same redundant-pair situation as issue_dependencies: sub_issue_added/removed
+// (on the sub-issue) and parent_issue_added/removed (on the parent) fire for
+// the same edge — only act on one pair.
+async function handleSubIssues(payload, env) {
+  let action;
+  if (payload.action === 'sub_issue_added') action = 'add';
+  else if (payload.action === 'sub_issue_removed') action = 'remove';
+  else return new Response('Ignored: redundant or unhandled action', { status: 200 });
+
+  const subUrl = payload.sub_issue?.html_url;
+  const parentUrl = payload.parent_issue?.html_url;
+  if (!subUrl || !parentUrl) {
+    return new Response('Ignored: missing issue URLs', { status: 200 });
+  }
+
+  const token = await getInstallationToken(env.APP_ID, env.APP_PRIVATE_KEY, env.INSTALLATION_ID);
+  const resp = await dispatch(token, 'github_sub_issue_change', {
+    sub_html_url: subUrl,
+    parent_html_url: parentUrl,
+    action,
+  });
+
+  if (!resp.ok) {
+    const text = await resp.text();
+    return new Response(`Dispatch failed: ${text}`, { status: 500 });
+  }
+  return new Response('OK', { status: 200 });
+}
+
+// ── Linear -> GitHub ───────────────────────────────────────────────────────────
 
 async function handleLinearWebhook(request, env) {
   const body = await request.text();
 
-  // ── Verify Linear webhook signature ───────────────────────────────────────
   const sigHeader = request.headers.get('Linear-Signature');
   if (!sigHeader) {
     return new Response('Unauthorized: missing signature', { status: 401 });
@@ -145,15 +211,10 @@ async function handleLinearWebhook(request, env) {
     return new Response('Ignored: not an Issue update', { status: 200 });
   }
 
-  // TEMPORARY debug capture — remove once payload shape is confirmed.
-  if (payload.updatedFrom && 'parentId' in payload.updatedFrom) {
-    const token = await getInstallationToken(env.APP_ID, env.APP_PRIVATE_KEY, env.INSTALLATION_ID);
-    await dispatch(token, 'debug_payload', { event: 'linear_parent_change', raw: body });
-  }
-
   const stateChanged = !!payload.updatedFrom && 'stateId' in payload.updatedFrom;
   const priorityChanged = !!payload.updatedFrom && 'priority' in payload.updatedFrom;
-  if (!stateChanged && !priorityChanged) {
+  const parentChanged = !!payload.updatedFrom && 'parentId' in payload.updatedFrom;
+  if (!stateChanged && !priorityChanged && !parentChanged) {
     return new Response('Ignored: no relevant field changed', { status: 200 });
   }
 
@@ -162,50 +223,47 @@ async function handleLinearWebhook(request, env) {
     return new Response('Ignored: missing issue id', { status: 200 });
   }
 
-  // ── Resolve the linked GitHub issue via Linear's own attachment data ──────
-  const attachResp = await fetch('https://api.linear.app/graphql', {
-    method: 'POST',
-    headers: {
-      'Authorization': env.LINEAR_API_KEY,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      query: 'query($id: String!) { issue(id: $id) { attachments { nodes { url sourceType } } } }',
-      variables: { id: issueId },
-    }),
-  });
-  const attachData = await attachResp.json();
-  const githubUrl = attachData?.data?.issue?.attachments?.nodes
-    ?.find((a) => a.sourceType === 'github')?.url;
+  const githubUrl = await resolveLinearIssueGithubUrl(env, issueId);
   if (!githubUrl) {
     return new Response('Ignored: no linked GitHub issue', { status: 200 });
   }
-
-  const match = githubUrl.match(/github\.com\/([^/]+)\/([^/]+)\/issues\/(\d+)/);
+  const match = parseGithubIssueUrl(githubUrl);
   if (!match) {
     return new Response('Ignored: unrecognized GitHub URL shape', { status: 200 });
   }
-  const [, owner, repo, number] = match;
+  const { owner, repo, number } = match;
 
-  // ── Forward whichever changed as repository_dispatch(es) ─────────────────
   const token = await getInstallationToken(env.APP_ID, env.APP_PRIVATE_KEY, env.INSTALLATION_ID);
   const results = [];
 
   if (stateChanged && payload.data?.state?.name) {
     results.push(await dispatch(token, 'linear_status_change', {
-      owner,
-      repo,
-      issue_number: Number(number),
+      owner, repo, issue_number: number,
       new_status: payload.data.state.name,
     }));
   }
   if (priorityChanged && payload.data?.priority !== undefined && payload.data?.priority !== null) {
     results.push(await dispatch(token, 'linear_priority_change', {
-      owner,
-      repo,
-      issue_number: Number(number),
+      owner, repo, issue_number: number,
       new_priority: payload.data.priority,
     }));
+  }
+  if (parentChanged) {
+    const newParentId = payload.data?.parentId ?? null;
+    const oldParentId = payload.updatedFrom.parentId ?? null;
+    // Resolve whichever parent (new, if set — else old, for a removal) to a
+    // GitHub URL. A parent with no GitHub link at all means nothing to sync.
+    const parentLinearId = newParentId ?? oldParentId;
+    if (parentLinearId) {
+      const parentGithubUrl = await resolveLinearIssueGithubUrl(env, parentLinearId);
+      if (parentGithubUrl) {
+        results.push(await dispatch(token, 'linear_parent_change', {
+          owner, repo, issue_number: number,
+          parent_html_url: parentGithubUrl,
+          action: newParentId ? 'add' : 'remove',
+        }));
+      }
+    }
   }
 
   const failed = results.find((r) => !r.ok);
@@ -213,8 +271,30 @@ async function handleLinearWebhook(request, env) {
     const text = await failed.text();
     return new Response(`Dispatch failed: ${text}`, { status: 500 });
   }
-
   return new Response('OK', { status: 200 });
+}
+
+async function resolveLinearIssueGithubUrl(env, linearIssueId) {
+  const resp = await fetch('https://api.linear.app/graphql', {
+    method: 'POST',
+    headers: {
+      'Authorization': env.LINEAR_API_KEY,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      query: 'query($id: String!) { issue(id: $id) { attachments { nodes { url sourceType } } } }',
+      variables: { id: linearIssueId },
+    }),
+  });
+  const data = await resp.json();
+  return data?.data?.issue?.attachments?.nodes?.find((a) => a.sourceType === 'github')?.url ?? null;
+}
+
+function parseGithubIssueUrl(url) {
+  const match = url.match(/github\.com\/([^/]+)\/([^/]+)\/issues\/(\d+)/);
+  if (!match) return null;
+  const [, owner, repo, number] = match;
+  return { owner, repo, number: Number(number) };
 }
 
 async function dispatch(token, eventType, clientPayload) {
