@@ -9,22 +9,24 @@
  *                       - issue_dependencies (blocked_by_added/removed only —
  *                         GitHub also fires the redundant blocking_added/removed
  *                         for the same edge, ignored here) -> `github_blocked_by_change`
- *                         for linear-relation-sync.yml
- *                       - sub_issues (sub_issue_added/removed only — same
- *                         redundant-pair situation as above with
- *                         parent_issue_added/removed) -> `github_sub_issue_change`
- *                         for linear-relation-sync.yml
+ *                         for github-blocked-by-drag.yml
  *  POST /linear-webhook — Issue webhooks from Linear. Forwards state changes
- *                       as `linear_status_change` for linear-drag.yml,
+ *                       as `linear_status_change` for linear-drag.yml and
  *                       priority changes as `linear_priority_change` for
- *                       linear-priority-drag.yml, and parent/child changes as
- *                       `linear_parent_change` for linear-relation-sync.yml —
- *                       any subset can fire from the same delivery.
+ *                       linear-priority-drag.yml — both can fire from the
+ *                       same delivery.
  *
  *                       Linear has no webhook resourceType for IssueRelation
  *                       (blocks/blocked-by), so that direction can't be
  *                       event-driven at all — see the scheduled polling job
  *                       (linear-relation-poll.yml) instead.
+ *
+ *                       Sub-issue (parent/child) sync isn't handled here at
+ *                       all: Linear's own native GitHub integration already
+ *                       syncs that bidirectionally on its own (confirmed
+ *                       empirically 2026-08-04) — custom code for it was
+ *                       built, tested, found to be dead weight racing and
+ *                       losing to the native sync every time, and removed.
  *
  * Required environment variables (set as Worker secrets in Cloudflare dashboard):
  *   WEBHOOK_SECRET        — secret configured on the GitHub App webhook
@@ -81,9 +83,6 @@ async function handleGithubWebhook(request, env) {
 
   if (githubEvent === 'issue_dependencies') {
     return handleIssueDependencies(payload, env);
-  }
-  if (githubEvent === 'sub_issues') {
-    return handleSubIssues(payload, env);
   }
   if (githubEvent === 'projects_v2_item') {
     return handleProjectsV2Item(payload, env);
@@ -152,35 +151,6 @@ async function handleIssueDependencies(payload, env) {
   return new Response('OK', { status: 200 });
 }
 
-// Same redundant-pair situation as issue_dependencies: sub_issue_added/removed
-// (on the sub-issue) and parent_issue_added/removed (on the parent) fire for
-// the same edge — only act on one pair.
-async function handleSubIssues(payload, env) {
-  let action;
-  if (payload.action === 'sub_issue_added') action = 'add';
-  else if (payload.action === 'sub_issue_removed') action = 'remove';
-  else return new Response('Ignored: redundant or unhandled action', { status: 200 });
-
-  const subUrl = payload.sub_issue?.html_url;
-  const parentUrl = payload.parent_issue?.html_url;
-  if (!subUrl || !parentUrl) {
-    return new Response('Ignored: missing issue URLs', { status: 200 });
-  }
-
-  const token = await getInstallationToken(env.APP_ID, env.APP_PRIVATE_KEY, env.INSTALLATION_ID);
-  const resp = await dispatch(token, 'github_sub_issue_change', {
-    sub_html_url: subUrl,
-    parent_html_url: parentUrl,
-    action,
-  });
-
-  if (!resp.ok) {
-    const text = await resp.text();
-    return new Response(`Dispatch failed: ${text}`, { status: 500 });
-  }
-  return new Response('OK', { status: 200 });
-}
-
 // ── Linear -> GitHub ───────────────────────────────────────────────────────────
 
 async function handleLinearWebhook(request, env) {
@@ -213,8 +183,7 @@ async function handleLinearWebhook(request, env) {
 
   const stateChanged = !!payload.updatedFrom && 'stateId' in payload.updatedFrom;
   const priorityChanged = !!payload.updatedFrom && 'priority' in payload.updatedFrom;
-  const parentChanged = !!payload.updatedFrom && 'parentId' in payload.updatedFrom;
-  if (!stateChanged && !priorityChanged && !parentChanged) {
+  if (!stateChanged && !priorityChanged) {
     return new Response('Ignored: no relevant field changed', { status: 200 });
   }
 
@@ -247,23 +216,6 @@ async function handleLinearWebhook(request, env) {
       owner, repo, issue_number: number,
       new_priority: payload.data.priority,
     }));
-  }
-  if (parentChanged) {
-    const newParentId = payload.data?.parentId ?? null;
-    const oldParentId = payload.updatedFrom.parentId ?? null;
-    // Resolve whichever parent (new, if set — else old, for a removal) to a
-    // GitHub URL. A parent with no GitHub link at all means nothing to sync.
-    const parentLinearId = newParentId ?? oldParentId;
-    if (parentLinearId) {
-      const parentGithubUrl = await resolveLinearIssueGithubUrl(env, parentLinearId);
-      if (parentGithubUrl) {
-        results.push(await dispatch(token, 'linear_parent_change', {
-          owner, repo, issue_number: number,
-          parent_html_url: parentGithubUrl,
-          action: newParentId ? 'add' : 'remove',
-        }));
-      }
-    }
   }
 
   const failed = results.find((r) => !r.ok);
