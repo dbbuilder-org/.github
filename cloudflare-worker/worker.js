@@ -145,6 +145,12 @@ async function handleLinearWebhook(request, env) {
     return new Response('Ignored: not an Issue update', { status: 200 });
   }
 
+  // TEMPORARY debug capture — remove once payload shape is confirmed.
+  if (payload.updatedFrom && 'parentId' in payload.updatedFrom) {
+    const token = await getInstallationToken(env.APP_ID, env.APP_PRIVATE_KEY, env.INSTALLATION_ID);
+    await dispatch(token, 'debug_payload', { event: 'linear_parent_change', raw: body });
+  }
+
   const stateChanged = !!payload.updatedFrom && 'stateId' in payload.updatedFrom;
   const priorityChanged = !!payload.updatedFrom && 'priority' in payload.updatedFrom;
   if (!stateChanged && !priorityChanged) {
